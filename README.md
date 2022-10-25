@@ -1,5 +1,6 @@
 # Constrained Decoding
 
+What is constrained decoding? HuggingFace put together a good [blogpost](https://huggingface.co/blog/constrained-beam-search).
 
 ## Setup
 
@@ -24,3 +25,11 @@ $ python -c "import torch; assert torch.cuda.is_available(); torch.tensor([1, 2]
 ## Using this project
 
 TBD
+
+
+## Resources
+
+- []()
+- [generation_utils](https://github.com/huggingface/transformers/blob/927f654427833dbf1da03f0cc036eed66f1d2533/src/transformers/generation_utils.py#L2679)
+- [generation_beam_search](https://github.com/huggingface/transformers/blob/main/src/transformers/generation_beam_search.py)
+- Papers relevant for the HuggingFace implementation [Post and Vilar 2018](https://arxiv.org/abs/1804.06609), [Hu et al 2019](https://aclanthology.org/N19-1090/), [Li et al. 2021](https://arxiv.org/pdf/2107.09846.pdf).
