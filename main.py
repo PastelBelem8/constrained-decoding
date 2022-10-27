@@ -17,6 +17,78 @@ import torch
 import torch.nn.functional as F
 
 
+class LanguageModel:
+    def __init__(self, model_name, model, tokenizer, device):
+        self.model_name = model_name
+        self.device = device
+
+        self.tokenizer, self.model = tokenizer, model
+        self.decoder_start_token_id = 0 # (start_decoder_token_id or bos_token_id) 0 # FIXME:
+
+    def is_encoder_decoder(self) -> bool:
+        raise NotImplementedError
+
+    def create_attn_mask(self, input_ids, attention_mask=None) -> torch.Tensor:
+        if (attention_mask is None) and (self.tokenizer.pad_token_id is not None) and (self.tokenizer.pad_token_id in input_ids):
+            attention_mask = input_ids.ne(self.tokenizer.pad_token_id).long()
+        elif attention_mask is None:
+            attention_mask = input_ids.new_ones(input_ids.shape)
+
+        return attention_mask
+
+    def prepare_encoder(self, *args, **kwargs) -> tuple:
+        raise NotImplementedError
+
+    def prepare_decoder_input_ids(self, *args, **kwargs) -> torch.Tensor:
+        raise NotImplementedError
+
+    def prepare_inputs_for_generation(self, input_ids, attention_mask=None, model_kwargs=None):
+        batch_size, cur_len = input_ids.shape
+        # 1. create attention mask
+        attention_mask = self.create_attn_mask(input_ids, attention_mask)
+
+        # 2. get encoder
+        encoder_outputs = self.prepare_encoder_input_ids(input_ids, attention_mask=attention_mask, model_kwargs=model_kwargs)
+
+        # 3. Prepare `input_ids` which will be used for auto-regressive generation
+        decoder_input_ids = self.prepare_decoder_input_ids(batch_size=batch_size, input_ids=input_ids, model_kwargs=model_kwargs)
+
+        # 4.
+
+    def _update_model_kwargs_for_generation(self, *args, **kwargs):
+        raise NotImplementedError
+
+
+class EncoderDecoderLM(LanguageModel):
+    def is_encoder_decoder(self):
+        return True
+
+    def prepare_encoder_input_ids(self, *args, **kwargs) -> tuple:
+        encoder = self.get_encoder()
+        encoder_outputs: tuple = encoder(*args, **kwargs)
+        return encoder_outputs
+
+    def prepare_decoder_input_ids(self, *args, batch_size, model_kwargs, **kwargs):
+        # 4. `input_ids` which will be used for auto-regressive generation
+        if model_kwargs is not None and "decoder_input_ids" in model_kwargs:
+            return model_kwargs.pop("decoder_input_ids")
+        else:
+            if device is None:
+                device = self.device
+            return torch.ones((batch_size, 1), dtype=torch.long, device=device) * self.decoder_start_token_id
+
+
+class DecoderLM(LanguageModel):
+    def is_encoder_decoder(self):
+        return False
+
+    def prepare_encoder_input_ids(self, *args, **kwargs):
+        return None
+
+    def prepare_decoder_input_ids(self, *args, input_ids,**kwargs):
+        # if decoder-only then inputs_tensor has to be `input_ids`
+        return input_ids
+
 def set_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -102,17 +174,9 @@ encoder_input_str = "translate English to German: How old are you?"
 input_ids = tokenizer(encoder_input_str, return_tensors="pt").input_ids
 
 # ------------------------------------------------------------
-outputs = model.generate(
-     input_ids,
-     do_sample=False,
-     num_return_sequences=1,
-     remove_invalid_values=True,
-)
-
+outputs = model.generate(input_ids, do_sample=False, num_return_sequences=1)
 print("Output:\n" + 100 * '-')
 print(tokenizer.decode(outputs[0], skip_special_tokens=True))
-
-
 
 if __name__ == "__main__":
     # set random seed
