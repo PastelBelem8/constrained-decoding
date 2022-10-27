@@ -158,7 +158,7 @@ def set_seed(seed: int):
 def mc_estimate(
     max_num_tokens: int,
     input_ids,
-    excluded_terms_ids: list,
+    avoid_term_ids: list,
     model,
     tokenizer,
     model_kwargs,
@@ -170,7 +170,7 @@ def mc_estimate(
     We follow an importance-sampling approach, where we consider the proposal
     distribution q(.|x_{1:i}) to be the renormmalized probabilities of the
     complement set of the excluded_terms (i.e., at every time-step we explicitly
-    avoid selecting any of the excluded_terms_ids).
+    avoid selecting any of the ``avoid_term_ids``).
 
     Pseudo-Algorithm
     ----------------
@@ -196,7 +196,7 @@ def mc_estimate(
         methods will have the input_ids of size (n_samples, template_len),
         whereas encoder-decoder architectures will have (n_samples, 1).
 
-    excluded_terms_list: list[int]
+    avoid_term_ids: list[int]
         List of token ids to avoid during sampling.
 
     model: transformers model
@@ -225,7 +225,7 @@ def mc_estimate(
         # 1. Create proposal distribution
         # ---------------------------------------------------------------------
         proposal = logits.clone().detach()
-        proposal[..., excluded_terms_ids] = -np.inf
+        proposal[..., avoid_term_ids] = -np.inf
 
         # ---------------------------------------------------------------------
         # 2. Sample next token based on proposal distribution
@@ -241,9 +241,9 @@ def mc_estimate(
         # ---------------------------------------------------------------------
         proposal_log_prob = torch.gather(proposal, dim=-1, index=next_tokens)
         model_prob = F.softmax(logits, dim=-1)
-        model_prob = 1 - model_prob[..., excluded_terms_ids].sum(dim=-1)
+        model_prob = 1 - model_prob[..., avoid_term_ids].sum(dim=-1)
         # ^Note: model_log_prob contains the probability that none of the
-        # excluded_terms_ids occurs...
+        # avoid_term_ids occurs...
 
         # ---------------------------------------------------------------------
         # 4. Handle EOS sequences:
@@ -303,13 +303,13 @@ if __name__ == "__main__":
 
     n_samples = 5
     excluded_terms = ["Sie"]
-    excluded_terms_ids = tokenizer(excluded_terms, add_special_tokens=False).input_ids
+    avoid_term_ids = tokenizer(excluded_terms, add_special_tokens=False).input_ids
 
     history = create_history(n_samples, input_ids, tokenizer.bos_token_id)
     model_kwargs = create_model_kwargs(history, model, tokenizer)
     result = mc_estimate(
         max_num_tokens=3,
-        excluded_terms_ids=excluded_terms_ids,
+        avoid_term_ids=avoid_term_ids,
         model=model,
         tokenizer=tokenizer,
         **model_kwargs,
