@@ -16,78 +16,66 @@ import random
 import torch
 import torch.nn.functional as F
 
-
-class LanguageModel:
-    def __init__(self, model_name, model, tokenizer, device):
-        self.model_name = model_name
-        self.device = device
-
-        self.tokenizer, self.model = tokenizer, model
-        self.decoder_start_token_id = 0 # (start_decoder_token_id or bos_token_id) 0 # FIXME:
-
-    def is_encoder_decoder(self) -> bool:
-        raise NotImplementedError
-
-    def create_attn_mask(self, input_ids, attention_mask=None) -> torch.Tensor:
-        if (attention_mask is None) and (self.tokenizer.pad_token_id is not None) and (self.tokenizer.pad_token_id in input_ids):
-            attention_mask = input_ids.ne(self.tokenizer.pad_token_id).long()
-        elif attention_mask is None:
-            attention_mask = input_ids.new_ones(input_ids.shape)
-
-        return attention_mask
-
-    def prepare_encoder(self, *args, **kwargs) -> tuple:
-        raise NotImplementedError
-
-    def prepare_decoder_input_ids(self, *args, **kwargs) -> torch.Tensor:
-        raise NotImplementedError
-
-    def prepare_inputs_for_generation(self, input_ids, attention_mask=None, model_kwargs=None):
-        batch_size, cur_len = input_ids.shape
-        # 1. create attention mask
-        attention_mask = self.create_attn_mask(input_ids, attention_mask)
-
-        # 2. get encoder
-        encoder_outputs = self.prepare_encoder_input_ids(input_ids, attention_mask=attention_mask, model_kwargs=model_kwargs)
-
-        # 3. Prepare `input_ids` which will be used for auto-regressive generation
-        decoder_input_ids = self.prepare_decoder_input_ids(batch_size=batch_size, input_ids=input_ids, model_kwargs=model_kwargs)
-
-        # 4.
-
-    def _update_model_kwargs_for_generation(self, *args, **kwargs):
-        raise NotImplementedError
+def assert_generative_model(model):
+    # cannot generate if the model does not have a LM head
+    if model.get_output_embeddings() is None:
+        raise AttributeError(
+            "You tried to generate sequences with a model that does not have a LM Head."
+            "Please use another model class (e.g. `OpenAIGPTLMHeadModel`,"
+            "`XLNetLMHeadModel`, `GPT2LMHeadModel`, `CTRLLMHeadModel`,"
+            "`T5WithLMHeadModel`, `TransfoXLLMHeadModel`, `XLMWithLMHeadModel`,"
+            "`T5ForConditionalGeneration`, `BartForConditionalGeneration` )"
+        )
 
 
-class EncoderDecoderLM(LanguageModel):
-    def is_encoder_decoder(self):
-        return True
-
-    def prepare_encoder_input_ids(self, *args, **kwargs) -> tuple:
-        encoder = self.get_encoder()
-        encoder_outputs: tuple = encoder(*args, **kwargs)
-        return encoder_outputs
-
-    def prepare_decoder_input_ids(self, *args, batch_size, model_kwargs, **kwargs):
-        # 4. `input_ids` which will be used for auto-regressive generation
-        if model_kwargs is not None and "decoder_input_ids" in model_kwargs:
-            return model_kwargs.pop("decoder_input_ids")
-        else:
-            if device is None:
-                device = self.device
-            return torch.ones((batch_size, 1), dtype=torch.long, device=device) * self.decoder_start_token_id
+def create_history(n_samples: int, inputs: list=None, bos_token_id: int=None):
+    if inputs is None:
+        assert isinstance(bos_token_id, int) and bos_token_id >= 0
+        return torch.ones((n_samples, 1), dtype=torch.long) * bos_token_id
+    elif inputs.shape[0] == n_samples:
+        return inputs
+    else:
+       return inputs.repeat(n_samples, 1)
 
 
-class DecoderLM(LanguageModel):
-    def is_encoder_decoder(self):
-        return False
+def create_attn_mask(tokenizer, input_ids, attention_mask=None, **_) -> torch.Tensor:
+    if (attention_mask is None) \
+        and (tokenizer.pad_token_id is not None) \
+            and (tokenizer.pad_token_id in input_ids):
+        attention_mask = input_ids.ne(tokenizer.pad_token_id).long()
+    elif attention_mask is None:
+        attention_mask = input_ids.new_ones(input_ids.shape)
 
-    def prepare_encoder_input_ids(self, *args, **kwargs):
-        return None
+    return attention_mask
 
-    def prepare_decoder_input_ids(self, *args, input_ids,**kwargs):
+def create_model_kwargs(inputs_tensor, model, tokenizer, **model_kwargs):
+    batch_size = inputs_tensor.shape[0]
+    # 1. create attention mask
+    attention_mask = create_attn_mask(tokenizer, inputs_tensor, **model_kwargs)
+    model_kwargs.update(attention_mask=attention_mask)
+
+    # 2. get encoder (if encoder_decoder model)
+    if model.config.is_encoder_decoder:
+        model_kwargs = model._prepare_encoder_decoder_kwargs_for_generation(inputs_tensor, model_kwargs, "input_ids")
+
+    # 3. Prepare `input_ids` which will be used for auto-regressive generation
+    if model.config.is_encoder_decoder:
+        input_ids = model._prepare_decoder_input_ids_for_generation(
+            batch_size,
+            decoder_start_token_id=model.config.decoder_start_token_id,
+            bos_token_id=model.config.bos_token_id,
+            model_kwargs=model_kwargs,
+            device=inputs_tensor.device,
+        )
+    else:
         # if decoder-only then inputs_tensor has to be `input_ids`
-        return input_ids
+        input_ids = inputs_tensor
+
+    return {
+        "input_ids": input_ids,
+        "model_kwargs": model_kwargs,
+    }
+
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -96,29 +84,29 @@ def set_seed(seed: int):
 
 
 @torch.no_grad()
-def mc_estimate(max_len: int, n_samples: int, excluded_terms: list, history: torch.Tensor, model, tokenizer) -> float:
+def mc_estimate(max_num_tokens: int, input_ids, excluded_terms_ids: list, model, tokenizer, model_kwargs) -> float:
     """"""
-    # TODO: Add validation for the history (condition on)
-    # - if specified, history should be tensor (n_samples x 1)
+    # TODO: Add validation for the history (condition on) - if specified, history should be tensor (n_samples x 1)
+    assert_generative_model(model)
 
-    intermediate_model_prob = torch.ones_like(history)
-    samples, unfinished_sequences = history, torch.ones_like(history)
+    samples = input_ids.clone().detach()
+    intermediate_model_prob = torch.ones_like(input_ids, dtype=torch.float32)
+    unfinished_sequences = torch.ones_like(input_ids, dtype=torch.float32)
     debug = {}
-    # prepare_inputs_for_generation
-    # model_kwargs = self._update_model_kwargs_for_generation(
-    #            outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder
-    # )
-    for i in range(max_len):
-        # logits: (n_samples, vocab_size)
-        model_outputs = model.forward(samples)
+    for i in range(max_num_tokens):
+        model_inputs = model.prepare_inputs_for_generation(samples, **model_kwargs)
+        model_outputs = model.forward(**model_inputs)
+        # logits: (n_samples, current_len, vocab_size)
         logits = model_outputs.logits.clone().detach()
+        # Select next token logits: (n_samples, vocab_size)
+        logits = logits[:,-1,:]
         logits = F.log_softmax(logits, dim=-1)
 
         # ---------------------------------------------------------------------
         # 1. Create proposal distribution
         # ---------------------------------------------------------------------
         proposal = logits.clone().detach()
-        proposal[..., excluded_terms] = -np.inf
+        proposal[..., excluded_terms_ids] = -np.inf
 
         # ---------------------------------------------------------------------
         # 2. Sample next token based on proposal distribution
@@ -132,9 +120,9 @@ def mc_estimate(max_len: int, n_samples: int, excluded_terms: list, history: tor
         # ---------------------------------------------------------------------
         proposal_log_prob = torch.gather(proposal, dim=-1, index=next_tokens)
         model_prob = F.softmax(logits, dim=-1)
-        model_prob = 1 - model_prob[..., excluded_terms].sum(dim=-1)
+        model_prob = 1 - model_prob[..., excluded_terms_ids].sum(dim=-1)
         # ^Note: model_log_prob contains the probability that none of the
-        # excluded_terms occurs...
+        # excluded_terms_ids occurs...
 
         # ---------------------------------------------------------------------
         # 4. Handle EOS sequences:
@@ -149,6 +137,8 @@ def mc_estimate(max_len: int, n_samples: int, excluded_terms: list, history: tor
 
         # 5. Update intermediate artifacts
         intermediate_model_prob *= model_prob
+        samples = torch.cat([samples, next_tokens.long()], dim=-1)
+        model._update_model_kwargs_for_generation(model_outputs, model_kwargs, is_encoder_decoder=model.config.is_encoder_decoder)
 
         debug[i] = {
             "model_prob": model_prob,
@@ -164,20 +154,6 @@ def mc_estimate(max_len: int, n_samples: int, excluded_terms: list, history: tor
     return prob
 
 
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-
-model_name = "t5-base"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-
-encoder_input_str = "translate English to German: How old are you?"
-input_ids = tokenizer(encoder_input_str, return_tensors="pt").input_ids
-
-# ------------------------------------------------------------
-outputs = model.generate(input_ids, do_sample=False, num_return_sequences=1)
-print("Output:\n" + 100 * '-')
-print(tokenizer.decode(outputs[0], skip_special_tokens=True))
-
 if __name__ == "__main__":
     # set random seed
     set_seed(42)
@@ -187,12 +163,22 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
 
+    assert_generative_model(model)
     encoder_input_str = "translate English to German: How old are you?"
     input_ids = tokenizer(encoder_input_str, return_tensors="pt").input_ids
 
     n_samples = 2
     excluded_terms = ["Sie"]
-    history = input_ids.repeat(n_samples, 1)
-    result = mc_estimate(2, n_samples, excluded_terms, history, model, tokenizer)
+    excluded_terms_ids = tokenizer(excluded_terms, add_special_tokens=False).input_ids
+
+    history = create_history(n_samples, input_ids, tokenizer.bos_token_id)
+    model_kwargs = create_model_kwargs(history, model, tokenizer)
+    result = mc_estimate(
+        max_num_tokens=3,
+        excluded_terms_ids=excluded_terms_ids,
+        model=model,
+        tokenizer=tokenizer,
+        **model_kwargs,
+    )
     print(result)
     print()
