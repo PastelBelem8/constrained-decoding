@@ -156,6 +156,18 @@ def set_seed(seed: int):
 
 
 @torch.no_grad()
+def naive_mc_estimate(
+    max_num_tokens: int,
+    input_ids,
+    avoid_term_ids: list,
+    model,
+    tokenizer,
+    model_kwargs,
+):
+    raise NotImplementedError
+
+
+@torch.no_grad()
 def mc_estimate(
     max_num_tokens: int,
     input_ids,
@@ -214,9 +226,9 @@ def mc_estimate(
         Keyword arguments to use for debugging purposes. If specified,
         they will be used to persist the intermediate results.
     """
-    samples = input_ids
-    intermediate_model_log_prob = torch.ones_like(input_ids, dtype=torch.float32)
-    unfinished_sequences = torch.ones((input_ids.shape[0], 1), dtype=torch.bool)
+    n_samples, samples = input_ids.shape[0], input_ids.clone()
+    intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32)
+    unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool)
     debug = {}
 
     for i in range(max_num_tokens):
@@ -255,16 +267,14 @@ def mc_estimate(
         # 4. Handle EOS sequences:
         # ---------------------------------------------------------------------
         # - If sequence is finished, ignore sampled token and use padding.
-        next_tokens = torch.where(
-            unfinished_sequences, next_tokens, tokenizer.pad_token_id
-        )
+        next_tokens = torch.where(unfinished_sequences, next_tokens, tokenizer.pad_token_id)
         model_prob = torch.where(unfinished_sequences, model_prob, 1)
 
         # - Update the mask when you identify end of sequence tokens
         if tokenizer.eos_token_id is not None:
-            # Set current unfinished to 1 if next token is EOS
+            # Set current unfinished to 1 if next token is not EOS
             current_unfinished = torch.where(
-                next_tokens == tokenizer.eos_token_id, 1, 0
+                next_tokens == tokenizer.eos_token_id, 0, 1
             )
             # Update previously unfinished sequences to be unfinished
             unfinished_sequences = torch.logical_and(
@@ -293,22 +303,23 @@ def mc_estimate(
         # ---------------------------------------------------------------------
 
         debug[i] = {
-            "model_prob": model_prob,
-            "unfinished_sequences": unfinished_sequences,
-            "proposal_log_prob": proposal_log_prob,
-            "intermediate_model_log_prob": intermediate_model_log_prob.clone(),
+            "model_prob": model_prob.tolist(),
+            "next_tokens": next_tokens.tolist(),
+            "proposal_log_prob": proposal_log_prob.tolist(),
+            "intermediate_model_log_prob": intermediate_model_log_prob.tolist(),
+            "unfinished_sequences": unfinished_sequences.tolist(),
         }
 
         # If all sequences are finished (unfinished==0), don't keep generating
         if (unfinished_sequences == 0).all():
-            print(f"Sequences finished prematurely ({i+1}/{max_num_tokens}.")
+            print(f"Sequences finished prematurely ({i+1}/{max_num_tokens}).")
             break
 
     # -------------------------------------------------------------------------
     # 5. Compute probability of number of times element in C do not occur
     # -------------------------------------------------------------------------
-    prob = intermediate_model_prob.mean().item()
-    return prob
+    prob = torch.exp(intermediate_model_log_prob).mean().item()
+    return prob # , debug
 
 
 def log_odds(
