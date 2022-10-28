@@ -164,7 +164,77 @@ def naive_mc_estimate(
     tokenizer,
     model_kwargs,
 ):
-    raise NotImplementedError
+    n_samples, samples = input_ids.shape[0], input_ids.clone()
+    intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32)
+    unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool)
+    debug = {}
+
+    for i in range(max_num_tokens):
+        model_inputs = model.prepare_inputs_for_generation(samples, **model_kwargs)
+        model_outputs = model.forward(**model_inputs)
+        # logits: (n_samples, current_len, vocab_size)
+        logits = model_outputs.logits
+        # Select next token logits: (n_samples, vocab_size)
+        logits = logits[:, -1, :]
+
+        # ---------------------------------------------------------------------
+        # 2. Sample next token based on proposal distribution
+        # ---------------------------------------------------------------------
+        # Categorical.sample() returns a sampled index per each row.
+        # samples is of shape (n_samples, 1)
+        next_tokens = (
+            torch.distributions.Categorical(logits=logits).sample().unsqueeze(-1)
+        )
+
+        # ---------------------------------------------------------------------
+        # 4. Handle EOS sequences:
+        # ---------------------------------------------------------------------
+        # - If sequence is finished, ignore sampled token and use padding.
+        next_tokens = torch.where(unfinished_sequences, next_tokens, tokenizer.pad_token_id)
+
+        # - Update the mask when you identify end of sequence tokens
+        if tokenizer.eos_token_id is not None:
+            # Set current unfinished to 1 if next token is not EOS
+            current_unfinished = torch.where(
+                next_tokens == tokenizer.eos_token_id, 0, 1
+            )
+            # Update previously unfinished sequences to be unfinished
+            unfinished_sequences = torch.logical_and(
+                unfinished_sequences, current_unfinished
+            )
+
+        # 5. Update intermediate artifacts
+        samples = torch.cat([samples, next_tokens], dim=-1)  # FIXME: Double check this
+        # ^Note: decoder-architectures will need the whole sequence at decoding time
+
+        model._update_model_kwargs_for_generation(
+            model_outputs,
+            model_kwargs,
+            is_encoder_decoder=model.config.is_encoder_decoder,
+        )
+        # ---------------------------------------------------------------------
+        # ^Note: This model call is model-specific and takes care of
+        # retrieving the necessary information in `model_outputs` to
+        # `model_kwargs`. In the case of T5-based model this will be
+        # mostly using the decoders' `past-key-values` in
+        # `model_outputs` as the `past` keyword argument in
+        # model_kwargs. This avoid having to feed in the whole decoding
+        # sequence at generation (thus making it faster).
+        # ---------------------------------------------------------------------
+
+        # If all sequences are finished (unfinished==0), don't keep generating
+        if (unfinished_sequences == 0).all():
+            print(f"Sequences finished prematurely ({i+1}/{max_num_tokens}).")
+            break
+
+    # -------------------------------------------------------------------------
+    # 5. Compute probability of number of times element in C do not occur
+    # -------------------------------------------------------------------------
+    samples_with_avoid_terms = torch.isin(samples, test_elements=torch.tensor(avoid_term_ids), assume_unique=True)
+    samples_with_avoid_terms = samples_with_avoid_terms.any(dim=-1)
+
+    return 1 - samples_with_avoid_terms.mean().item()
+
 
 
 @torch.no_grad()
