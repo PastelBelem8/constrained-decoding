@@ -163,6 +163,7 @@ def mc_estimate(
     model,
     tokenizer,
     model_kwargs,
+    debug_kwargs=None,
 ):
     """Estimates the probability of generating sequences up to length ``max_num_tokens``
     such that no term in ``excluded_terms`` appears.
@@ -206,27 +207,30 @@ def mc_estimate(
     tokenizer: transformers tokenizer
         Corresponding tokenizer.
 
-    model_kwargs:
+    model_kwargs: dict
         Keyword arguments to use during generation of the continuations.
+
+    debug_kwargs: dict, optional
+        Keyword arguments to use for debugging purposes. If specified,
+        they will be used to persist the intermediate results.
     """
-    samples = input_ids.clone().detach()
-    intermediate_model_prob = torch.ones_like(input_ids, dtype=torch.float32)
-    unfinished_sequences = torch.ones_like(input_ids, dtype=torch.float32)
+    samples = input_ids
+    intermediate_model_log_prob = torch.ones_like(input_ids, dtype=torch.float32)
+    unfinished_sequences = torch.ones((input_ids.shape[0], 1), dtype=torch.bool)
     debug = {}
 
     for i in range(max_num_tokens):
         model_inputs = model.prepare_inputs_for_generation(samples, **model_kwargs)
         model_outputs = model.forward(**model_inputs)
         # logits: (n_samples, current_len, vocab_size)
-        logits = model_outputs.logits.clone().detach()
+        logits = model_outputs.logits
         # Select next token logits: (n_samples, vocab_size)
         logits = logits[:, -1, :]
-        logits = F.log_softmax(logits, dim=-1)
 
         # ---------------------------------------------------------------------
         # 1. Create proposal distribution
         # ---------------------------------------------------------------------
-        proposal = logits.clone().detach()
+        proposal = logits.clone()
         proposal[..., avoid_term_ids] = -np.inf
 
         # ---------------------------------------------------------------------
@@ -251,35 +255,52 @@ def mc_estimate(
         # 4. Handle EOS sequences:
         # ---------------------------------------------------------------------
         # - If sequence is finished, ignore sampled token and use padding.
-        next_tokens = next_tokens * unfinished_sequences + tokenizer.pad_token_id * (
-            1 - unfinished_sequences
+        next_tokens = torch.where(
+            unfinished_sequences, next_tokens, tokenizer.pad_token_id
         )
-        model_prob = model_prob * unfinished_sequences + 1 * (1 - unfinished_sequences)
+        model_prob = torch.where(unfinished_sequences, model_prob, 1)
 
         # - Update the mask when you identify end of sequence tokens
         if tokenizer.eos_token_id is not None:
-            unfinished_sequences = unfinished_sequences.mul(
-                (next_tokens != tokenizer.eos_token_id).long()
+            # Set current unfinished to 1 if next token is EOS
+            current_unfinished = torch.where(
+                next_tokens == tokenizer.eos_token_id, 1, 0
+            )
+            # Update previously unfinished sequences to be unfinished
+            unfinished_sequences = torch.logical_and(
+                unfinished_sequences, current_unfinished
             )
 
         # 5. Update intermediate artifacts
-        intermediate_model_prob *= model_prob
-        samples = torch.cat([samples, next_tokens.long()], dim=-1)
+        intermediate_model_log_prob += torch.log(model_prob)
+
+        samples = torch.cat([samples, next_tokens], dim=-1)  # FIXME: Double check this
+        # ^Note: decoder-architectures will need the whole sequence at decoding time
+
         model._update_model_kwargs_for_generation(
             model_outputs,
             model_kwargs,
             is_encoder_decoder=model.config.is_encoder_decoder,
         )
+        # ---------------------------------------------------------------------
+        # ^Note: This model call is model-specific and takes care of
+        # retrieving the necessary information in `model_outputs` to
+        # `model_kwargs`. In the case of T5-based model this will be
+        # mostly using the decoders' `past-key-values` in
+        # `model_outputs` as the `past` keyword argument in
+        # model_kwargs. This avoid having to feed in the whole decoding
+        # sequence at generation (thus making it faster).
+        # ---------------------------------------------------------------------
 
         debug[i] = {
             "model_prob": model_prob,
             "unfinished_sequences": unfinished_sequences,
             "proposal_log_prob": proposal_log_prob,
-            "intermediate_model_prob": intermediate_model_prob.clone(),
+            "intermediate_model_log_prob": intermediate_model_log_prob.clone(),
         }
 
-        # If all sequences are finished, don't keep generating
-        if unfinished_sequences.sum() == 0:
+        # If all sequences are finished (unfinished==0), don't keep generating
+        if (unfinished_sequences == 0).all():
             print(f"Sequences finished prematurely ({i+1}/{max_num_tokens}.")
             break
 
@@ -290,7 +311,16 @@ def mc_estimate(
     return prob
 
 
-def log_odds(model, tokenizer, num_samples, max_num_tokens, terms_A, terms_B, input_str=None, seed=42):
+def log_odds(
+    model,
+    tokenizer,
+    num_samples,
+    max_num_tokens,
+    terms_A,
+    terms_B,
+    input_str=None,
+    seed=42,
+):
     set_seed(seed)
 
     terms_A = [terms_A] if isinstance(terms_A, str) else terms_A
@@ -320,7 +350,9 @@ def log_odds(model, tokenizer, num_samples, max_num_tokens, terms_A, terms_B, in
         **mc_estimate_kwargs,
     )
 
-    print("Terms A", terms_A, f"(encoded {terms_A_ids}):", p_no_A_occurs) # inflated because of decomposition into sub pieces
+    print(
+        "Terms A", terms_A, f"(encoded {terms_A_ids}):", p_no_A_occurs
+    )  # inflated because of decomposition into sub pieces
 
     terms_B_ids = tokenizer(terms_B, add_special_tokens=False).input_ids
     p_no_B_occurs = mc_estimate(
@@ -339,10 +371,11 @@ def log_odds(model, tokenizer, num_samples, max_num_tokens, terms_A, terms_B, in
     print(f"Terms A and B (encoded {terms_AB_ids}):", p_no_AB_occurs)
     print()
 
-    numerator = (1 + p_no_AB_occurs - p_no_B_occurs - p_no_A_occurs)
+    numerator = 1 + p_no_AB_occurs - p_no_B_occurs - p_no_A_occurs
     denominator = (1 - p_no_B_occurs) * (1 - p_no_A_occurs)
 
     print(f"log({numerator}/{denominator}) = {np.log(numerator) - np.log(denominator)}")
+
 
 if __name__ == "__main__":
     # FIXME
