@@ -103,7 +103,7 @@ def importance_sampling(
         # 4. Handle EOS sequences:
         # ---------------------------------------------------------------------
         # - If sequence is finished, ignore sampled token and use padding.
-        next_tokens = torch.where(unfinished_sequences, next_tokens, tokenizer.pad_token_id)
+        next_tokens = torch.where(unfinished_sequences, next_tokens, tokenizer.pad_token_id or tokenizer.eos_token_id)
         model_prob = torch.where(unfinished_sequences, model_prob, 1)
 
         # - Update the mask when you identify end of sequence tokens
@@ -208,7 +208,7 @@ def naive_sampling(
         # 4. Handle EOS sequences:
         # ---------------------------------------------------------------------
         # If sequence is finished, ignore sampled token and use padding.
-        next_tokens = torch.where(unfinished_sequences, next_tokens, tokenizer.pad_token_id)
+        next_tokens = torch.where(unfinished_sequences, next_tokens, tokenizer.pad_token_id or tokenizer.eos_token_id)
 
         # Update the mask when you identify end of sequence tokens
         if tokenizer.eos_token_id is not None:
