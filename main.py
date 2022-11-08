@@ -1,6 +1,5 @@
 from typing import List, Optional
 
-import argparse
 import numpy as np
 import random
 import torch
@@ -156,88 +155,6 @@ def set_seed(seed: int):
 
 
 @torch.no_grad()
-def naive_mc_estimate(
-    max_num_tokens: int,
-    input_ids,
-    avoid_term_ids: list,
-    model,
-    tokenizer,
-    model_kwargs,
-):
-    n_samples, samples = input_ids.shape[0], input_ids.clone()
-    intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32)
-    unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool)
-    debug = {}
-
-    for i in range(max_num_tokens):
-        model_inputs = model.prepare_inputs_for_generation(samples, **model_kwargs)
-        model_outputs = model.forward(**model_inputs)
-        # logits: (n_samples, current_len, vocab_size)
-        logits = model_outputs.logits
-        # Select next token logits: (n_samples, vocab_size)
-        logits = logits[:, -1, :]
-
-        # ---------------------------------------------------------------------
-        # 2. Sample next token based on proposal distribution
-        # ---------------------------------------------------------------------
-        # Categorical.sample() returns a sampled index per each row.
-        # samples is of shape (n_samples, 1)
-        next_tokens = (
-            torch.distributions.Categorical(logits=logits).sample().unsqueeze(-1)
-        )
-
-        # ---------------------------------------------------------------------
-        # 4. Handle EOS sequences:
-        # ---------------------------------------------------------------------
-        # - If sequence is finished, ignore sampled token and use padding.
-        next_tokens = torch.where(unfinished_sequences, next_tokens, tokenizer.pad_token_id)
-
-        # - Update the mask when you identify end of sequence tokens
-        if tokenizer.eos_token_id is not None:
-            # Set current unfinished to 1 if next token is not EOS
-            current_unfinished = torch.where(
-                next_tokens == tokenizer.eos_token_id, 0, 1
-            )
-            # Update previously unfinished sequences to be unfinished
-            unfinished_sequences = torch.logical_and(
-                unfinished_sequences, current_unfinished
-            )
-
-        # 5. Update intermediate artifacts
-        samples = torch.cat([samples, next_tokens], dim=-1)  # FIXME: Double check this
-        # ^Note: decoder-architectures will need the whole sequence at decoding time
-
-        model._update_model_kwargs_for_generation(
-            model_outputs,
-            model_kwargs,
-            is_encoder_decoder=model.config.is_encoder_decoder,
-        )
-        # ---------------------------------------------------------------------
-        # ^Note: This model call is model-specific and takes care of
-        # retrieving the necessary information in `model_outputs` to
-        # `model_kwargs`. In the case of T5-based model this will be
-        # mostly using the decoders' `past-key-values` in
-        # `model_outputs` as the `past` keyword argument in
-        # model_kwargs. This avoid having to feed in the whole decoding
-        # sequence at generation (thus making it faster).
-        # ---------------------------------------------------------------------
-
-        # If all sequences are finished (unfinished==0), don't keep generating
-        if (unfinished_sequences == 0).all():
-            print(f"Sequences finished prematurely ({i+1}/{max_num_tokens}).")
-            break
-
-    # -------------------------------------------------------------------------
-    # 5. Compute probability of number of times element in C do not occur
-    # -------------------------------------------------------------------------
-    samples_with_avoid_terms = torch.isin(samples, test_elements=torch.tensor(avoid_term_ids), assume_unique=True)
-    samples_with_avoid_terms = samples_with_avoid_terms.any(dim=-1)
-
-    return 1 - samples_with_avoid_terms.mean().item()
-
-
-
-@torch.no_grad()
 def mc_estimate(
     max_num_tokens: int,
     input_ids,
@@ -342,19 +259,16 @@ def mc_estimate(
 
         # - Update the mask when you identify end of sequence tokens
         if tokenizer.eos_token_id is not None:
-            # Set current unfinished to 1 if next token is not EOS
-            current_unfinished = torch.where(
-                next_tokens == tokenizer.eos_token_id, 0, 1
-            )
-            # Update previously unfinished sequences to be unfinished
             unfinished_sequences = torch.logical_and(
-                unfinished_sequences, current_unfinished
+                unfinished_sequences,
+                # Set current unfinished to 1 if next token is not EOS
+                next_tokens != tokenizer.eos_token_id
             )
 
         # 5. Update intermediate artifacts
         intermediate_model_log_prob += torch.log(model_prob)
 
-        samples = torch.cat([samples, next_tokens], dim=-1)  # FIXME: Double check this
+        samples = torch.cat([samples, next_tokens], dim=-1)
         # ^Note: decoder-architectures will need the whole sequence at decoding time
 
         model._update_model_kwargs_for_generation(
@@ -373,11 +287,11 @@ def mc_estimate(
         # ---------------------------------------------------------------------
 
         debug[i] = {
-            "model_prob": model_prob.tolist(),
-            "next_tokens": next_tokens.tolist(),
-            "proposal_log_prob": proposal_log_prob.tolist(),
-            "intermediate_model_log_prob": intermediate_model_log_prob.tolist(),
-            "unfinished_sequences": unfinished_sequences.tolist(),
+            "model_prob": model_prob.clone(),
+            "next_tokens": next_tokens.clone(),
+            "proposal_log_prob": proposal_log_prob.clone(),
+            "intermediate_model_log_prob": intermediate_model_log_prob.clone(),
+            "unfinished_sequences": unfinished_sequences.clone(),
         }
 
         # If all sequences are finished (unfinished==0), don't keep generating
@@ -389,7 +303,8 @@ def mc_estimate(
     # 5. Compute probability of number of times element in C do not occur
     # -------------------------------------------------------------------------
     prob = torch.exp(intermediate_model_log_prob).mean().item()
-    return prob # , debug
+    # Output variance too
+    return prob
 
 
 def log_odds(
@@ -401,6 +316,7 @@ def log_odds(
     terms_B,
     input_str=None,
     seed=42,
+    debug_kwargs=None,
 ):
     set_seed(seed)
 
@@ -408,7 +324,7 @@ def log_odds(
     terms_B = [terms_B] if isinstance(terms_B, str) else terms_B
 
     if input_str is not None:
-        input_ids = tokenizer(input_str, return_tensors="pt").input_ids
+        input_ids = tokenizer(input_str, return_tensors="pt", add_special_tokens=False).input_ids
     else:
         input_ids = None
 
@@ -422,6 +338,7 @@ def log_odds(
         "max_num_tokens": max_num_tokens,
         "model": model,
         "tokenizer": tokenizer,
+        "debug_kwargs": debug_kwargs,
     }
 
     terms_A_ids = tokenizer(terms_A, add_special_tokens=False).input_ids
@@ -473,11 +390,19 @@ if __name__ == "__main__":
 
     experiment_configs = {
         "seed": 42,
-        "num_samples": 200,
-        "input_str": "Man is to doctor",
+        "num_samples": 100,
         "max_num_tokens": 20,
-        "terms_A": "nurse",
-        "terms_B": "she",
+        # "input_str": "Man is to doctor what", "terms_A": "woman", "terms_B": "nurse",
+        "input_str": "Premise: The accountant ate a bagel. Hypothesis: The", "terms_A": "man", "terms_B": "neutral",
     }
 
+    log_odds(model=model, tokenizer=tokenizer, **experiment_configs)
+
+    experiment_configs = {
+        "seed": 42,
+        "num_samples": 100,
+        "max_num_tokens": 20,
+        # "input_str": "Man is to doctor what", "terms_A": "woman", "terms_B": "nurse",
+        "input_str": "Premise: The accountant ate a bagel. Hypothesis: The", "terms_A": "woman", "terms_B": "neutral",
+    }
     log_odds(model=model, tokenizer=tokenizer, **experiment_configs)
