@@ -57,10 +57,6 @@ def importance_sampling(
 
     model_kwargs: dict
         Keyword arguments to use during generation of the continuations.
-
-    debug_kwargs: dict, optional
-        Keyword arguments to use for debugging purposes. If specified,
-        they will be used to persist the intermediate results.
     """
     n_samples, samples = input_ids.shape[0], input_ids.clone()
     intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32)
@@ -95,7 +91,7 @@ def importance_sampling(
         # ---------------------------------------------------------------------
         proposal_log_prob = torch.gather(proposal, dim=-1, index=next_tokens)
         model_prob = F.softmax(logits, dim=-1)
-        model_prob = 1 - model_prob[..., avoid_term_ids].sum(dim=-1)
+        model_prob = 1 - model_prob[..., avoid_term_ids].sum(dim=-1).unsqueeze(-1)
         # ^Note: model_log_prob contains the probability that none of the
         # avoid_term_ids occurs...
 
@@ -103,7 +99,12 @@ def importance_sampling(
         # 4. Handle EOS sequences:
         # ---------------------------------------------------------------------
         # - If sequence is finished, ignore sampled token and use padding.
-        next_tokens = torch.where(unfinished_sequences, next_tokens, tokenizer.pad_token_id or tokenizer.eos_token_id)
+        next_tokens = torch.where(
+            unfinished_sequences,
+            next_tokens,
+            tokenizer.pad_token_id or tokenizer.eos_token_id,
+        )
+        # - If sequence is finished set model_prob to 1 so it does not affect sum
         model_prob = torch.where(unfinished_sequences, model_prob, 1)
 
         # - Update the mask when you identify end of sequence tokens
@@ -111,7 +112,7 @@ def importance_sampling(
             unfinished_sequences = torch.logical_and(
                 unfinished_sequences,
                 # Set current unfinished to 1 if next token is not EOS
-                next_tokens != tokenizer.eos_token_id
+                next_tokens != tokenizer.eos_token_id,
             )
 
         # 5. Update intermediate artifacts
@@ -153,8 +154,8 @@ def importance_sampling(
     # 5. Compute probability of number of times element in C do not occur
     # -------------------------------------------------------------------------
     prob_mean = torch.exp(intermediate_model_log_prob).mean().item()
-    prob_var  = torch.exp(intermediate_model_log_prob).var().item()
-    return prob_mean, prob_var
+    prob_var = torch.exp(intermediate_model_log_prob).var().item()
+    return prob_mean, prob_var, samples
 
 
 @torch.no_grad()
@@ -208,7 +209,11 @@ def naive_sampling(
         # 4. Handle EOS sequences:
         # ---------------------------------------------------------------------
         # If sequence is finished, ignore sampled token and use padding.
-        next_tokens = torch.where(unfinished_sequences, next_tokens, tokenizer.pad_token_id or tokenizer.eos_token_id)
+        next_tokens = torch.where(
+            unfinished_sequences,
+            next_tokens,
+            tokenizer.pad_token_id or tokenizer.eos_token_id,
+        )
 
         # Update the mask when you identify end of sequence tokens
         if tokenizer.eos_token_id is not None:
@@ -243,10 +248,48 @@ def naive_sampling(
     # -------------------------------------------------------------------------
     # 5. Compute probability of number of times element in C do not occur
     # -------------------------------------------------------------------------
-    samples_with_avoid_terms = torch.isin(samples, test_elements=torch.tensor(avoid_term_ids), assume_unique=True)
+    samples_with_avoid_terms = torch.isin(
+        samples, test_elements=torch.tensor(avoid_term_ids), assume_unique=True
+    )
     samples_with_avoid_terms = samples_with_avoid_terms.any(dim=-1)
 
     proba_mean = 1.0 - samples_with_avoid_terms.float().mean().item()
     proba_var = samples_with_avoid_terms.float().var().item()
 
     return proba_mean, proba_var, samples
+
+
+if __name__ == "__main__":
+    from transformers import GPT2Tokenizer, GPT2LMHeadModel
+    from utils import *
+
+    # User definitions
+    model_name = "gpt2"
+    seed = 42
+
+    num_samples = 200
+    input_str, avoid_terms = "I love", " the this that you u"
+
+
+    # Load models
+    tokenizer = GPT2Tokenizer.from_pretrained(model_name, model_max_length=512)
+    model = GPT2LMHeadModel.from_pretrained(model_name, pad_token_id=tokenizer.eos_token_id)
+
+    # Parse input and set seeds for reproducibility
+    set_seed(seed)
+    bos_token_id = tokenizer.bos_token_id or model.config.decoder_start_token_id
+    input_ids = tokenizer(input_str, return_tensors="pt", add_special_tokens=False).input_ids
+
+    avoid_terms_ids = tokenizer(avoid_terms, add_special_tokens=False).input_ids
+
+    # History (or past observations) and model_kwargs will be the same for all queries
+    history = create_history(num_samples, input_ids, bos_token_id)
+
+    # Call IMPORTANCE Sampling
+    mean, var, samples = importance_sampling(
+        avoid_term_ids=avoid_terms_ids,
+        **create_model_kwargs(history, model, tokenizer),
+        max_num_tokens=5,
+        model=model,
+        tokenizer=tokenizer,
+    )
