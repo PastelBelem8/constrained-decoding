@@ -37,7 +37,7 @@ def log_odds(
     }
 
     terms_A_ids = tokenizer(terms_A, add_special_tokens=False).input_ids
-    p_no_A_occurs, _ = importance_sampling(
+    p_no_A_occurs, _ = importance_sampling(  # TODO: Check return
         avoid_term_ids=terms_A_ids,
         **create_model_kwargs(history, model, tokenizer),
         **mc_estimate_kwargs,
@@ -48,7 +48,7 @@ def log_odds(
     )  # inflated because of decomposition into sub pieces
 
     terms_B_ids = tokenizer(terms_B, add_special_tokens=False).input_ids
-    p_no_B_occurs, _, _ = importance_sampling(
+    p_no_B_occurs, _ = importance_sampling( # TODO: Check return
         avoid_term_ids=terms_B_ids,
         **create_model_kwargs(history, model, tokenizer),
         **mc_estimate_kwargs,
@@ -56,7 +56,7 @@ def log_odds(
     print("Terms B", terms_B, f"(encoded {terms_B_ids}):", p_no_B_occurs)
 
     terms_AB_ids = [terms_A_ids[0] + terms_B_ids[0]]
-    p_no_AB_occurs, _, _ = importance_sampling(
+    p_no_AB_occurs, _ = importance_sampling( # TODO: Check return
         avoid_term_ids=terms_AB_ids,
         **create_model_kwargs(history, model, tokenizer),
         **mc_estimate_kwargs,

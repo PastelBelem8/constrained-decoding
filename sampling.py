@@ -153,9 +153,9 @@ def importance_sampling(
     # -------------------------------------------------------------------------
     # 5. Compute probability of number of times element in C do not occur
     # -------------------------------------------------------------------------
-    prob_mean = torch.exp(intermediate_model_log_prob).mean().item()
-    prob_var = torch.exp(intermediate_model_log_prob).var().item()
-    return prob_mean, prob_var, samples
+    # prob_mean = torch.exp(intermediate_model_log_prob).mean().item()
+    # prob_var = torch.exp(intermediate_model_log_prob).var().item()
+    return torch.exp(intermediate_model_log_prob), samples, debug
 
 
 @torch.no_grad()
@@ -252,11 +252,7 @@ def naive_sampling(
         samples, test_elements=torch.tensor(avoid_term_ids), assume_unique=True
     )
     samples_with_avoid_terms = samples_with_avoid_terms.any(dim=-1)
-
-    proba_mean = 1.0 - samples_with_avoid_terms.float().mean().item()
-    proba_var = samples_with_avoid_terms.float().var().item()
-
-    return proba_mean, proba_var, samples
+    return 1.0 - samples_with_avoid_terms.float(), samples
 
 
 if __name__ == "__main__":
@@ -286,7 +282,7 @@ if __name__ == "__main__":
     history = create_history(num_samples, input_ids, bos_token_id)
 
     # Call IMPORTANCE Sampling
-    mean, var, samples = importance_sampling(
+    probabilities, samples, debug = importance_sampling(
         avoid_term_ids=avoid_terms_ids,
         **create_model_kwargs(history, model, tokenizer),
         max_num_tokens=5,
