@@ -35,6 +35,10 @@ def importance_sampling(
     # 2.1. Compute h_j = \product_{i=1}^k \sum_{c in C_complement} p(X_i^{j}=c | X_{1:i-1}^j)
     # 3. Compute p(N_c(k)=0) = 1/M sum h_j
 
+    Notes
+    -----
+    This algorithm does not support sequences of tokens but rather a set of tokens.
+
     Parameters
     ----------
     max_num_tokens: int
@@ -57,6 +61,7 @@ def importance_sampling(
 
     model_kwargs: dict
         Keyword arguments to use during generation of the continuations.
+
     """
     n_samples, samples = input_ids.shape[0], input_ids.clone()
     intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32)
