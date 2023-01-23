@@ -62,11 +62,16 @@ def importance_sampling(
     model_kwargs: dict
         Keyword arguments to use during generation of the continuations.
 
+    Returns
+    -------
+
     """
     n_samples, samples = input_ids.shape[0], input_ids.clone()
     intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32)
     unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool)
-    debug = {}
+    debug = {
+        "avoid_terms_ids": avoid_term_ids,
+    }
 
     for i in range(max_num_tokens):
         model_inputs = model.prepare_inputs_for_generation(samples, **model_kwargs)
@@ -142,6 +147,7 @@ def importance_sampling(
         # ---------------------------------------------------------------------
         debug[i] = {
             "model_prob": model_prob.clone(),
+            "logits": F.log_softmax(logits, dim=-1),
             "next_tokens": next_tokens.clone(),
             "proposal_log_prob": proposal_log_prob.clone(),
             "intermediate_model_log_prob": intermediate_model_log_prob.clone(),
