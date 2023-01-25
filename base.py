@@ -31,6 +31,7 @@ class BaseSampler:
     device: optional[str], defaults to "gpu" if available
         Text representation of the device to use during sampling.
     """
+
     def __init__(
         self,
         model_name: str,
@@ -40,18 +41,20 @@ class BaseSampler:
         debug=False,
     ):
         self.model_name = model_name
-        self.model_kwargs = model_kwargs
-        self.tokenizer_kwargs = tokenizer_kwargs
+        self.model_kwargs = model_kwargs or {}
+        self.tokenizer_kwargs = tokenizer_kwargs or {}
 
         self.tokenizer, self.model = utils_models.load_model(
-            model_name, self.tokenizer_args, self.model_kwargs
+            model_name, self.tokenizer_kwargs, self.model_kwargs
         )
         self.device = utils_models.get_device(device)
 
         self.reset_intermediate_results()
 
     @abstractmethod
-    def _sample(self, input_ids, avoid_terms_ids, max_num_tokens, model, tokenizer, model_kwargs):
+    def _sample(
+        self, input_ids, avoid_terms_ids, max_num_tokens, model, tokenizer, model_kwargs
+    ):
         """Specific sampling procedure (e.g., random, importance sampling) that estimates
         the probability of the specified avoid_terms_ids not occurring in any position up
         to max_num_tokens.
@@ -79,20 +82,36 @@ class BaseSampler:
     def _parse_results(*args):
         return args
 
-    def estimate(self, input_str, avoid_terms, num_sequences: int, max_num_tokens: int, seed: int, add_special_tokens=False):
+    def estimate(
+        self,
+        input_str,
+        avoid_terms,
+        num_sequences: int,
+        max_num_tokens: int,
+        seed: int,
+        add_special_tokens=False,
+    ):
         set_seed(seed)
         self.to_device(input_str, avoid_terms)
 
-        bos_token_id = self.tokenizer.bos_token_id or self.model.config.decoder_start_token_id
-        input_ids = self.tokenizer(input_str, return_tensors="pt", add_special_tokens=add_special_tokens).input_ids
+        bos_token_id = (
+            self.tokenizer.bos_token_id or self.model.config.decoder_start_token_id
+        )
+        input_ids = self.tokenizer(
+            input_str, return_tensors="pt", add_special_tokens=add_special_tokens
+        ).input_ids
 
-        avoid_terms_ids = self.tokenizer(avoid_terms, add_special_tokens=add_special_tokens).input_ids
+        avoid_terms_ids = self.tokenizer(
+            avoid_terms, add_special_tokens=add_special_tokens
+        ).input_ids
         # ^Note: some tokenizers encode the same term differently depending on
         # whether they are preceeded with a space or not
         # FIXME: Address this situation
 
         history = create_history(num_sequences, input_ids, bos_token_id)
-        sampling_specific_kwargs = create_model_kwargs(history, self.model, self.tokenizer)
+        sampling_specific_kwargs = create_model_kwargs(
+            history, self.model, self.tokenizer
+        )
 
         results = self._sample(
             avoid_terms_ids=avoid_terms_ids,
@@ -106,7 +125,7 @@ class BaseSampler:
         self.model_prob_occur = []
         self.logits = []
         self.next_tokens = []
-        self.cum_model_log_prob_not_occur = [] # cumulative prob distribution
+        self.cum_model_log_prob_not_occur = []  # cumulative prob distribution
         self.unfinished_sequences = []
 
     def to_device(self, *args):

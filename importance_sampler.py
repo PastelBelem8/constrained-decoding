@@ -1,3 +1,4 @@
+from tqdm import tqdm
 from base import BaseSampler
 
 import numpy as np
@@ -54,13 +55,16 @@ class ImportanceSampler(BaseSampler):
     model_kwargs: dict
         Keyword arguments to use during generation of the continuations.
     """
+
     def _sample(self, input_ids, avoid_terms_ids, max_num_tokens, model_kwargs):
         n_samples, samples = input_ids.shape[0], input_ids.clone()
         intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32)
         unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool)
 
-        for i in range(max_num_tokens):
-            model_inputs = self.model.prepare_inputs_for_generation(samples, **model_kwargs)
+        for i in tqdm(range(max_num_tokens)):
+            model_inputs = self.model.prepare_inputs_for_generation(
+                samples, **model_kwargs
+            )
             model_outputs = self.model.forward(**model_inputs)
             # logits: (n_samples, current_len, vocab_size)
             logits = model_outputs.logits
@@ -134,7 +138,9 @@ class ImportanceSampler(BaseSampler):
             self.model_prob_occur.append(1 - model_prob.clone())
             self.logits.append(F.log_softmax(logits, dim=-1))
             self.next_tokens.append(next_tokens.clone())
-            self.cum_model_log_prob_not_occur.append(intermediate_model_log_prob.clone())
+            self.cum_model_log_prob_not_occur.append(
+                intermediate_model_log_prob.clone()
+            )
             self.unfinished_sequences.append(unfinished_sequences.clone())
             self.proposal_log_prob.append(proposal_log_prob.clone())
 
@@ -161,7 +167,7 @@ class ImportanceSampler(BaseSampler):
             else:
                 raise ValueError(
                     "Could not estimate marginals."
-                    "Please call \"ImportanceSampling.estimate\" first."
+                    'Please call "ImportanceSampling.estimate" first.'
                 )
 
         # --------------------------------------------------------------
@@ -175,13 +181,13 @@ class ImportanceSampler(BaseSampler):
         # of these terms occurs before timestep i
         miss_probs = []
 
-        for i in range(num_tokens):
+        for i in tqdm(range(num_tokens)):
             prob_occur = self.model_prob_occur[i]
 
             if miss_probs == []:
-                miss_probs.append(1-prob_occur)
+                miss_probs.append(1 - prob_occur)
             else:
-                miss_probs.append(miss_probs[-1] * (1-prob_occur))
+                miss_probs.append(miss_probs[-1] * (1 - prob_occur))
 
             if len(miss_probs) > 1:
                 # Probability of terms not occurring before timestep i

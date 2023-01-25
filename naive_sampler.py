@@ -1,3 +1,4 @@
+from tqdm import tqdm
 from base import BaseSampler
 
 import torch
@@ -6,15 +7,18 @@ import torch.nn.functional as F
 
 class NaiveSampler(BaseSampler):
     """Randomly sample tokens from the specified model."""
+
     def _sample(self, input_ids, avoid_terms_ids, max_num_tokens, model_kwargs):
         avoid_terms_ids = torch.tensor(avoid_terms_ids).squeeze().unique().tolist()
 
-        n_samples, history_length = input_ids.shape,
+        n_samples, history_length = (input_ids.shape,)
         samples = input_ids.clone()
         unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool)
 
-        for i in range(max_num_tokens):
-            model_inputs = self.model.prepare_inputs_for_generation(samples, **model_kwargs)
+        for i in tqdm(range(max_num_tokens)):
+            model_inputs = self.model.prepare_inputs_for_generation(
+                samples, **model_kwargs
+            )
             model_outputs = self.model.forward(**model_inputs)
             # model logits: (n_samples, current_len, vocab_size)
             # Because we're interested in the next tokens [-1], we restrict it to size
@@ -65,7 +69,9 @@ class NaiveSampler(BaseSampler):
             # sequence at generation (thus making it faster).
             # ---------------------------------------------------------------------
             model_prob = F.softmax(logits, dim=-1)
-            model_prob_occur = model_prob[..., avoid_terms_ids].sum(dim=-1).unsqueeze(-1)
+            model_prob_occur = (
+                model_prob[..., avoid_terms_ids].sum(dim=-1).unsqueeze(-1)
+            )
             self.model_prob_occur.append(model_prob_occur.clone())
             self.logits.append(F.log_softmax(logits, dim=-1))
             self.next_tokens.append(next_tokens)
@@ -73,7 +79,7 @@ class NaiveSampler(BaseSampler):
 
             # In naive sampling, the probability of occurring specific tokens
             # consists of computing how many times any of the terms happened
-            self.cum_model_log_prob_not_occur.append() # FIXME: Implement this
+            self.cum_model_log_prob_not_occur.append()  # FIXME: Implement this
 
             # Stop whenever all sequences are finished (unfinished==0)
             if (unfinished_sequences == 0).all():
@@ -84,7 +90,9 @@ class NaiveSampler(BaseSampler):
         # 5. Compute probability of number of times element in C do not occur
         # -------------------------------------------------------------------------
         samples_with_avoid_terms = torch.isin(
-            samples[:, history_length:], test_elements=torch.tensor(avoid_terms_ids), assume_unique=True
+            samples[:, history_length:],
+            test_elements=torch.tensor(avoid_terms_ids),
+            assume_unique=True,
         )
         # ^Note: samples[:, history_length:] aims to avoid counting tokens in the
         # prefix/history for models that require feeding the history as input.
