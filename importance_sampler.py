@@ -57,9 +57,13 @@ class ImportanceSampler(BaseSampler):
     """
 
     def _sample(self, input_ids, avoid_terms_ids, max_num_tokens, model_kwargs):
+        input_ids = input_ids.to(self.device)
+        avoid_terms_ids = avoid_terms_ids.to(self.device)
+        model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
+
         n_samples, samples = input_ids.shape[0], input_ids.clone()
-        intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32)
-        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool)
+        intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32).to(self.device)
+        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(self.device)
 
         for i in tqdm(range(max_num_tokens)):
             model_inputs = self.model.prepare_inputs_for_generation(
@@ -84,7 +88,7 @@ class ImportanceSampler(BaseSampler):
             # samples is of shape (n_samples, 1)
             next_tokens = (
                 torch.distributions.Categorical(logits=proposal).sample().unsqueeze(-1)
-            )
+            ).to(self.device)
 
             # ---------------------------------------------------------------------
             # 3. Accumulate log_probabilities
@@ -156,10 +160,10 @@ class ImportanceSampler(BaseSampler):
         # -------------------------------------------------------------------------
         return torch.exp(intermediate_model_log_prob), samples
 
-    def _reset_estimates(self):
+    def _reset_intermediate_results(self):
         self.proposal_log_prob = []
 
-    def _estimate_marginals(self, *args, **kwargs):
+    def estimate_hit_probability(self, *args, **kwargs):
         if self.model_prob_occur == []:
             print(args, kwargs)
             if args or kwargs:
@@ -173,7 +177,7 @@ class ImportanceSampler(BaseSampler):
         # --------------------------------------------------------------
         # Assumption: the intermediate artifacts have been stored
         # --------------------------------------------------------------
-        num_tokens = self.model_prob_occur.shape[1]
+        num_tokens = len(self.model_prob_occur)
         # hit_probs: hitting time probability, i.e., the probability
         # that the first time any of the terms appears is at timestep i
         hit_probs = []

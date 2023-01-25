@@ -9,15 +9,17 @@ class NaiveSampler(BaseSampler):
     """Randomly sample tokens from the specified model."""
 
     def _sample(self, input_ids, avoid_terms_ids, max_num_tokens, model_kwargs):
-        avoid_terms_ids = torch.tensor(avoid_terms_ids).squeeze().unique().tolist()
+        input_ids = input_ids.to(self.device)
+        avoid_terms_ids = avoid_terms_ids.to(self.device)
+        model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
 
-        n_samples, history_length = (input_ids.shape,)
+        n_samples, history_length = input_ids.shape
         samples = input_ids.clone()
-        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool)
+        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(self.device)
 
         for i in tqdm(range(max_num_tokens)):
             model_inputs = self.model.prepare_inputs_for_generation(
-                samples, **model_kwargs
+                samples, **model_kwargs, device=self.device
             )
             model_outputs = self.model.forward(**model_inputs)
             # model logits: (n_samples, current_len, vocab_size)
@@ -32,7 +34,7 @@ class NaiveSampler(BaseSampler):
             # samples are of shape (n_samples, 1)
             next_tokens = (
                 torch.distributions.Categorical(logits=logits).sample().unsqueeze(-1)
-            )
+            ).to(self.device)
 
             # ---------------------------------------------------------------------
             # 4. Handle EOS sequences:
@@ -79,7 +81,7 @@ class NaiveSampler(BaseSampler):
 
             # In naive sampling, the probability of occurring specific tokens
             # consists of computing how many times any of the terms happened
-            self.cum_model_log_prob_not_occur.append()  # FIXME: Implement this
+            # self.cum_model_log_prob_not_occur.append()  # FIXME: Implement this
 
             # Stop whenever all sequences are finished (unfinished==0)
             if (unfinished_sequences == 0).all():
@@ -91,7 +93,7 @@ class NaiveSampler(BaseSampler):
         # -------------------------------------------------------------------------
         samples_with_avoid_terms = torch.isin(
             samples[:, history_length:],
-            test_elements=torch.tensor(avoid_terms_ids),
+            test_elements=avoid_terms_ids,
             assume_unique=True,
         )
         # ^Note: samples[:, history_length:] aims to avoid counting tokens in the
@@ -100,5 +102,5 @@ class NaiveSampler(BaseSampler):
         samples_with_avoid_terms = samples_with_avoid_terms.any(dim=-1)
         return 1.0 - samples_with_avoid_terms.float(), samples
 
-    def _estimate_marginals(self):
+    def estimate_hit_probability(self):
         raise NotImplementedError

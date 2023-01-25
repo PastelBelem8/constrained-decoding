@@ -48,6 +48,7 @@ class BaseSampler:
             model_name, self.tokenizer_kwargs, self.model_kwargs
         )
         self.device = utils_models.get_device(device)
+        self.model.to(self.device)
 
         self.reset_intermediate_results()
 
@@ -72,15 +73,12 @@ class BaseSampler:
         raise NotImplemented
 
     @abstractmethod
-    def _estimate_marginals(self):
+    def estimate_hit_probability(self, *args, **kwargs):
         """Estimates the hitting time probabilities of any of the terms."""
-        raise NotImplemented
+        raise NotImplementedError
 
-    def _reset_estimates(self):
+    def _reset_intermediate_results(self):
         pass
-
-    def _parse_results(*args):
-        return args
 
     def estimate(
         self,
@@ -92,7 +90,7 @@ class BaseSampler:
         add_special_tokens=False,
     ):
         set_seed(seed)
-        self.to_device(input_str, avoid_terms)
+        self.reset_intermediate_results()
 
         bos_token_id = (
             self.tokenizer.bos_token_id or self.model.config.decoder_start_token_id
@@ -113,13 +111,16 @@ class BaseSampler:
             history, self.model, self.tokenizer
         )
 
+        # Avoid duplicate ids (FIXME: May not make sense, when we add support for phrases)
+        avoid_terms_ids = torch.tensor(avoid_terms_ids).squeeze().unique()
+
         results = self._sample(
             avoid_terms_ids=avoid_terms_ids,
             max_num_tokens=max_num_tokens,
             **sampling_specific_kwargs,
         )
 
-        return self._parse_results(results)
+        return results
 
     def reset_intermediate_results(self):
         self.model_prob_occur = []
@@ -127,8 +128,23 @@ class BaseSampler:
         self.next_tokens = []
         self.cum_model_log_prob_not_occur = []  # cumulative prob distribution
         self.unfinished_sequences = []
+        self._reset_intermediate_results()
 
-    def to_device(self, *args):
+    def to_device(self, *args, **kwargs):
+        # https://stackoverflow.com/questions/59560043/what-is-the-difference-between-model-todevice-and-model-model-todevice
+        # Models' modification is in place but for tensors it creates a copy
+        print("Setting device:", self.device)
         self.model.to(self.device)
-        for arg in args:
-            arg.to(self.device)
+
+        args = [a.to(self.device) for a in args]
+
+        new_kwargs = {}
+        for k, v in kwargs.items():
+            if isinstance(v, dict):
+                new_kwargs[k] = {}
+                for k2, v2 in v.items():
+                    new_kwargs[k][k2] = v2.to(self.device)
+            else:
+                new_kwargs[k] = v.to(self.device)
+
+        return args, kwargs
