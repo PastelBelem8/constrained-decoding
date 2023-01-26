@@ -77,24 +77,39 @@ class BaseSampler:
         """Estimates the hitting time probabilities of any of the terms."""
         raise NotImplementedError
 
+    def estimate_hit_probability_A_before_B(self, terms_A, terms_B, history=None, *args, **kwargs):
+        """Estimates the probability that any term in terms_A occurs before
+        any of the terms in B.
+
+        Notes
+        -----
+        terms_A and terms_B should be non-overlapping.
+        """
+        raise NotImplemented
+
     def _reset_intermediate_results(self):
         pass
 
     def estimate(
         self,
-        input_str,
-        avoid_terms,
+        input_str: str,
+        avoid_terms: str,
         num_sequences: int,
         max_num_tokens: int,
         seed: int,
-        add_special_tokens=False,
+        add_special_tokens: bool=False,
     ):
+        """"""
         set_seed(seed)
         self.reset_intermediate_results()
 
         bos_token_id = (
             self.tokenizer.bos_token_id or self.model.config.decoder_start_token_id
         )
+
+        if input_str is None:
+            input_str = ""
+
         input_ids = self.tokenizer(
             input_str, return_tensors="pt", add_special_tokens=add_special_tokens
         ).input_ids
