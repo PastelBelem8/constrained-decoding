@@ -215,7 +215,7 @@ class ImportanceSampler(BaseSampler):
     ) -> list:
         # Verify no repeated values in both set of terms
         terms_AB = terms_A + " " + terms_B
-        assert len(terms_AB.split() == len(set(terms_AB.split())), \
+        assert len(terms_AB.split()) == len(set(terms_AB.split())), \
             f"Invalid values: '{terms_A}' overlap terms in '{terms_B}'"
 
         # Compute the miss probabilities of the terms_A + terms_B
