@@ -56,6 +56,9 @@ class ImportanceSampler(BaseSampler):
         Keyword arguments to use during generation of the continuations.
     """
 
+    def _reset_intermediate_results(self):
+        self.proposal_log_prob = []
+
     def _sample(self, input_ids, avoid_terms_ids, max_num_tokens, model_kwargs):
         input_ids = input_ids.to(self.device)
         avoid_terms_ids = avoid_terms_ids.to(self.device)
@@ -160,10 +163,8 @@ class ImportanceSampler(BaseSampler):
         # -------------------------------------------------------------------------
         return torch.exp(intermediate_model_log_prob), samples
 
-    def _reset_intermediate_results(self):
-        self.proposal_log_prob = []
-
     def estimate_hit_probability(self, *args, **kwargs):
+        """$P(\pi(K) = a) = P(X_K = a, X_{<K} \neq a) = P(X_K = a| X_{<K} \neq a) P(X_{<K} \neq a)$"""
         if self.model_prob_occur == []:
             print(args, kwargs)
             if args or kwargs:
@@ -201,3 +202,46 @@ class ImportanceSampler(BaseSampler):
             hit_probs.append(prob_occur.mean().item())
 
         return hit_probs, miss_probs
+
+    def estimate_hit_probability_A_before_B(
+        self,
+        input_str: str,
+        terms_A: str,
+        terms_B: str,
+        num_sequences: int,
+        max_num_tokens: int,
+        seed: int,
+        add_special_tokens: bool=False,
+    ) -> list:
+        # Verify no repeated values in both set of terms
+        terms_AB = terms_A + " " + terms_B
+        assert len(terms_AB.split() == len(set(terms_AB.split())), \
+            f"Invalid values: '{terms_A}' overlap terms in '{terms_B}'"
+
+        # Compute the miss probabilities of the terms_A + terms_B
+        _, miss_probs_cdf = self.estimate_hit_probability(
+            input_str=input_str,
+            avoid_terms=terms_AB,
+            num_sequences=num_sequences,
+            max_num_tokens=max_num_tokens,
+            seed=seed,
+            add_special_tokens=add_special_tokens
+        )
+
+        # Compute the probabilities of terms A occurring
+        # (we already have this in self.logits[..., terms_A_ids])
+        terms_A_ids = self.tokenizer(
+            terms_A, add_special_tokens=add_special_tokens
+        ).input_ids
+
+        total_prob = []
+        for i, miss_prob in enumerate(miss_probs_cdf):
+            probs_occur = F.softmax(self.logits[i], dim=-1)
+            probs_occur = probs_occur[..., terms_A_ids].sum(dim=-1).unsqueeze(-1).item()
+
+            if i == 0: # terms_A occur at timestep 0
+                total_prob.append(probs_occur.mean().item())
+            else:
+                total_prob.append((miss_prob[i-1] * probs_occur).mean().item())
+
+        return total_prob
