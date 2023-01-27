@@ -107,12 +107,9 @@ class BaseSampler:
             self.tokenizer.bos_token_id or self.model.config.decoder_start_token_id
         )
 
-        if input_str is None:
-            input_str = ""
-
         input_ids = self.tokenizer(
             input_str, return_tensors="pt", add_special_tokens=add_special_tokens
-        ).input_ids
+        ).input_ids if input_str is not None else None
 
         avoid_terms_ids = self.tokenizer(
             avoid_terms, add_special_tokens=add_special_tokens
