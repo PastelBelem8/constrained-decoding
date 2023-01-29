@@ -1,4 +1,6 @@
-def load_model(model_name, tokenizer_kwargs, model_kwargs):
+def load_model(model_name, tokenizer_kwargs=None, model_kwargs=None):
+    tokenizer_kwargs = tokenizer_kwargs or {}
+    model_kwargs = model_kwargs or {}
     if "gpt-neo" in model_name:
         # reference: https://huggingface.co/docs/transformers/model_doc/gpt_neo
         from transformers import GPT2Tokenizer, GPTNeoForCausalLM
