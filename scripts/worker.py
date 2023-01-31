@@ -20,12 +20,28 @@ mechanism for the documents whose Deserialization
 errs. We will create a file that contains their IDs
 that is periodically dumped.
 """
-from scripts.representations import Data, ElasticSearchMixin
+from representations import Data, ElasticSearchMixin, HTTPMixin
+from frequencies import PositionalFrequencies
 
+import functools as ft
 import os
 
 
-class Worker(ElasticSearchMixin):
+def filter_tokenizer_results(results: dict):
+    """Filter tokens based on the masks."""
+    batch_tokens = []
+
+    for tokens, tokens_mask in zip(results["input_ids"], results["attention_mask"]):
+        valid_tokens = [token for token, mask in zip(tokens, tokens_mask) if mask]
+        batch_tokens.append(valid_tokens)
+
+    # Returns: list[list[int]]
+    # The first list constitutes batch_size list of tokens (list[int]).
+    # Each list of tokens constitutes up to 15 ints.
+    return batch_tokens
+
+
+class Worker(ElasticSearchMixin, HTTPMixin):
 
     def __init__(self, name: str, n_jobs: int, master: str, **kwargs):
         super().__init__(**kwargs)
@@ -33,10 +49,32 @@ class Worker(ElasticSearchMixin):
         self.n_jobs = n_jobs or os.cpu_count()
         self.master = master
 
-    def subscribe(self):
-        # TODO: Send http request to Master notifying name, n_jobs
+        self.processed_docs = list()
+        self.frequencies = PositionalFrequencies()
 
+        self.tokenizer: callable = None #FIXME -- How to deal with multiprocessing?
 
+    def _update_frequencies(self, tokens): #FIXME multiprocessing
+        for pos, token in enumerate(tokens):
+            self.frequencies.add(token, pos)
 
-    def execute(self, ids: list):
-        raise NotImplemented
+    def register(self):
+        results = self.put_http(self.master, name=self.name, n_jobs=self.jobs) #FIXME: how to process results?
+
+    def execute(self, data: Data, slice: int=200):
+        docs: list = self.get(data)
+
+        # Process docs to have up to K characters
+        docs_text = [d["_source"]["text"][:slice] for d in docs]
+
+        # Tokenizer
+        tokenized_text = self.tokenizer(docs_text)
+        batch_tokens = filter_tokenizer_results(tokenized_text)
+
+        for tokens in batch_tokens:
+            self._update_frequencies(tokens)
+
+        self.completed()
+
+    def completed(self):
+        self.put_http(self.master + "/mark_completed", name=self.name)
