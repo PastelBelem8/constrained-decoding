@@ -1,10 +1,10 @@
-"""Elastic-search related utils."""
+"""Elastic-search utils."""
 from elasticsearch import Elasticsearch
 
 
-def load(**kwargs) -> Elasticsearch:
+def load(cloud_id, api_key, retry_on_timeout=True, http_compress=True) -> Elasticsearch:
     # Create an elastic search engine
-    return Elasticsearch(**kwargs)
+    return Elasticsearch(cloud_id=cloud_id, api_key=api_key, retry_on_timeout=retry_on_timeout, http_compress=http_compress)
 
 
 def total_docs(es: Elasticsearch, index: str, query: dict, size=1) -> int:
@@ -19,13 +19,12 @@ def scroll(es: Elasticsearch, query: dict, size: int=100, scroll: str="10m", **k
     sid = data["_scroll_id"]
     scroll_size = len(data["hits"]["hits"])
 
-
     while scroll_size > 0:
-        print("Processing", scroll_size, "documents")
+        # print("Processing", scroll_size, "documents")
 
         yield data["hits"]["hits"]
 
-        data = es.scroll(scroll_id=sid, scroll="2m")
+        data = es.scroll(scroll_id=sid, scroll=scroll)
         sid = data["_scroll_id"]
 
         scroll_size = len(data["hits"]["hits"])

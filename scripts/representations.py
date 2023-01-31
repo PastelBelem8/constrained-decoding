@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from json.decoder import JSONDecodeError
 from io_utils import read_yaml_config
 
+import requests
 import traceback
 import es_utils as es
 
@@ -9,6 +10,9 @@ import es_utils as es
 @dataclass
 class Data:
     ids: list
+
+    def len(self):
+        return len(self.ids)
 
 
 class ElasticSearchMixin:
@@ -23,7 +27,7 @@ class ElasticSearchMixin:
         assert index == "*" or index in indices, \
             f"Invalid index: {index}. Expected '*' or one of the following {indices}"
 
-        self.errored_docs = []
+        self.errored_docs = list()
 
     def get(self, data: Data):
         try:
@@ -46,8 +50,22 @@ class ElasticSearchMixin:
             data = self.engine.scroll(scroll_id=scroll_id, scroll=scroll)
 
             if len(data["hits"]["hits"]) == 0:
-                self.engine.clear_scroll(scroll_id=scroll_id)
+                self.clear_scroll(scroll_id=scroll_id)
 
         # Get document identifiers
         docs = [doc["_id"] for doc in data["hits"]["hits"]]
-        return Data(docs)
+        return Data(docs), data["_scroll_id"]
+
+
+@dataclass
+class HTTPMixin:
+    url: str
+
+    def get_http(self, endpoint: str, **kwargs):
+        r = requests.get(self.url + endpoint, json=kwargs)
+        print(f"Status Code: {r.status_code}, Response: {r.json()}")
+        return r # FIXME: What is the format of the payload? What are we interested in returning?
+
+    def put_http(self, endpoint: str, **kwargs):
+        r = requests.post(self.url + endpoint, json=kwargs)
+        print(f"Status Code: {r.status_code}, Response: {r.json()}")
