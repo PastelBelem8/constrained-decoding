@@ -19,8 +19,21 @@ ensure that the subscriber will have a fail-safe
 mechanism for the documents whose Deserialization
 errs. We will create a file that contains their IDs.
 """
-from data_objects import Data
+from scripts.representations import Data, ElasticSearchMixin
 
 
-class Subscriber:
-    pass
+class Subscriber(ElasticSearchMixin):
+
+    def __init__(self, name: str, n_jobs: int, **kwargs):
+        super(ElasticSearchMixin, self).__init__(**kwargs)
+        self.name = name
+        self.n_jobs = n_jobs
+
+    def subscribe(self, url: str):
+        self.url = url
+
+        # TODO: Send http request to Publisher notifying name, n_jobs
+
+
+    def process(self, ids: list):
+        raise NotImplemented

@@ -21,8 +21,36 @@ to subscribers (and populated by the secondary thread).
 - subscribers::Queue, which contains the ids of the
 available subscribers.
 """
-from data_objects import Data
+from multiprocessing import Lock
+from scripts.representations import Data, ElasticSearchMixin
+import queue as q
 
+mutex = Lock()
 
-class Publisher:
-    pass
+class Publisher(ElasticSearchMixin):
+    def __init__(self, num_ids: int, max_subscribers: int=1_000, max_ids: int=1_000, **kwargs):
+        super(ElasticSearchMixin, self).__init__(**kwargs)
+
+        self.num_ids = num_ids
+        self.max_subscribers = max_subscribers
+        self.ids = q.Queue(maxsize=max_ids)
+        self.subscribers = q.Queue(maxsize=max_subscribers)
+
+        # Maps int --> name
+        self.subscribers_ids = dict()
+
+    def publish(self):
+        # need to have ES
+        raise NotImplementedError
+
+    def subscribe(self, name: str, n_jobs: int):
+        with mutex:
+            sid = self.subscribers_ids.setdefault(len(self.subscribers_ids), name)
+
+            for _ in range(n_jobs):
+                self.subscribers.put(sid)
+
+    def terminate(self):
+        for sub_id in self.subscribers_ids.values():
+            # FIXME - send request and terminate subscriber
+            raise NotImplementedError
