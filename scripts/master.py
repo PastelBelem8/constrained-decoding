@@ -24,11 +24,11 @@ available workers.
 from multiprocessing import Lock
 from scripts.representations import Data, ElasticSearchMixin, HTTPMixin
 import queue as q
+import configs as cfg
 
-mutex = Lock()
 
 class Master(ElasticSearchMixin, HTTPMixin):
-    def __init__(self, num_ids: int, max_workers: int=1_000, max_ids: int=1_000, **kwargs):
+    def __init__(self, num_ids: int=128, max_workers: int=1_000, max_ids: int=1_000, **kwargs):
         super().__init__(**kwargs)
         self.running = False
 
@@ -37,10 +37,9 @@ class Master(ElasticSearchMixin, HTTPMixin):
         self.tasks = q.Queue(maxsize=max_ids)
         self.available_workers = q.Queue(maxsize=max_workers)
 
+        self.mutex = Lock()
         # Mapping <int> id --> <str> name of worker
         self.available_workers_ids = dict()
-        # Mapping <str> name --> <int> id of worker
-        self.available_workers2ids = dict()
 
     def _estimate_scroll_time(self):
         # Apply a hard time estimate of the scroll time based on the
@@ -56,7 +55,7 @@ class Master(ElasticSearchMixin, HTTPMixin):
         while self.running == True:
             worker_id = self.available_workers.get(block=True)
 
-            with mutex:
+            with self.mutex:
                 worker = self.available_workers_ids[worker_id]
 
             task = self.tasks.get(block=True)
@@ -75,20 +74,24 @@ class Master(ElasticSearchMixin, HTTPMixin):
                 self.tasks.put(data, block=True)
 
     def register(self, worker: str, n_jobs: int):
-        with mutex:
+        with self.mutex:
             worker_id = self.available_workers_ids\
                 .setdefault(len(self.available_workers_ids), worker)
-            self.available_workers2ids[worker] = worker_id
 
         for _ in range(n_jobs):
             self.available_workers.put(worker_id, block=True)
 
-    def mark_completed(self, worker):
-        worker_id = self.available_workers2ids[worker]
+        return worker_id
+
+    def mark_completed(self, worker_id: int):
         self.available_workers.put(worker_id, block=True)
 
     def terminate(self):
-        for worker in self.available_workers2ids.keys():
-            self.put(worker + "/terminate") # FIXME: endpoint
+        workers = []
+        for worker in self.available_workers.values():
+            terminated = self.put_http(worker + cfg.WORKER_TERMINATE_ENDPOINT)
+            workers.append(terminated)
 
         self.running = False
+        # TODO: Empty queues?
+        return len(workers)
