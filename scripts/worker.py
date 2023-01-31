@@ -23,7 +23,7 @@ that is periodically dumped.
 from representations import Data, ElasticSearchMixin, HTTPMixin
 from frequencies import PositionalFrequencies
 
-import functools as ft
+import joblib
 import os
 
 
@@ -43,38 +43,48 @@ def filter_tokenizer_results(results: dict):
 
 class Worker(ElasticSearchMixin, HTTPMixin):
 
-    def __init__(self, name: str, n_jobs: int, master: str, **kwargs):
+    def __init__(self, master: str, name: str, n_jobs: int=None, **kwargs):
         super().__init__(**kwargs)
         self.name = name
         self.n_jobs = n_jobs or os.cpu_count()
         self.master = master
+        self.id = None
 
         self.processed_docs = list()
         self.frequencies = PositionalFrequencies()
 
         self.tokenizer: callable = None #FIXME -- How to deal with multiprocessing?
 
-    def _update_frequencies(self, tokens): #FIXME multiprocessing
+    def _update_frequencies(self, tokens): #FIXME multiprocessing -- add mutex?
         for pos, token in enumerate(tokens):
             self.frequencies.add(token, pos)
 
     def register(self):
         results = self.put_http(self.master, name=self.name, n_jobs=self.jobs) #FIXME: how to process results?
+        self.id = results["assigned_id"]
+        print(f"Assigned Worker ID: {self.id}")
 
     def execute(self, data: Data, slice: int=200):
         docs: list = self.get(data)
 
-        # Process docs to have up to K characters
-        docs_text = [d["_source"]["text"][:slice] for d in docs]
+        if len(docs) > 0:
+            # Process docs to have up to K characters
+            docs_text = [d["_source"]["text"][:slice] for d in docs]
 
-        # Tokenizer
-        tokenized_text = self.tokenizer(docs_text)
-        batch_tokens = filter_tokenizer_results(tokenized_text)
+            # Tokenizer
+            tokenized_text = self.tokenizer(docs_text)
+            batch_tokens = filter_tokenizer_results(tokenized_text)
 
-        for tokens in batch_tokens:
-            self._update_frequencies(tokens)
+            for tokens in batch_tokens:
+                self._update_frequencies(tokens)
 
         self.completed()
 
     def completed(self):
-        self.put_http(self.master + "/mark_completed", name=self.name)
+        self.put_http(self.master + "/mark_completed", id=self.id)
+
+    def terminate(self):
+        # FIXME: PATH
+        joblib.dump(self.processed_docs, path + ".proc_docs")
+        joblib.dump(self.errored_docs, path + ".err_docs")
+        joblib.dump(self.frequencies, path)
