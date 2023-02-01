@@ -1,7 +1,8 @@
 from functools import partial
-from es_utils import get_text, load, scroll, total_docs
+from es_utils import load, scroll_all_docs, total_docs
+from frequencies import PositionalFrequencies
 
-import argparse, os, math
+import argparse, joblib, json, math, os, tqdm
 import multiprocessing as mp
 
 
@@ -14,8 +15,8 @@ def read_yaml_config(config_file: str) -> dict:
 def load_tokenizer(model_name: str, num_tokens: int) -> callable:
     if "gpt-neo" in model_name or "gpt2" in model_name:
         # reference: https://huggingface.co/docs/transformers/model_doc/gpt_neo
-        from transformers import GPT2Tokenizer
-        tokenizer_class = GPT2Tokenizer
+        from transformers import GPT2TokenizerFast
+        tokenizer_class = GPT2TokenizerFast
     else:
         raise NotImplemented
 
@@ -33,7 +34,6 @@ def load_tokenizer(model_name: str, num_tokens: int) -> callable:
 
     return tokenize
 
-
 def load_elastic_search(config_path: str, index, query):
     elastic_configs = read_yaml_config(config_path)
     es = load(**elastic_configs)
@@ -41,14 +41,40 @@ def load_elastic_search(config_path: str, index, query):
 
     return es, n_docs
 
+def filter_tokenizer_results(results: dict):
+    """Filter tokens based on the masks."""
+    batch_tokens = []
 
-def compute_unigrams(args, queue: mp.Queue):
-    import time
+    for tokens, tokens_mask in zip(results["input_ids"], results["attention_mask"]):
+        valid_tokens = [token for token, mask in zip(tokens, tokens_mask) if mask]
+        batch_tokens.append(valid_tokens)
+
+    # Returns: list[list[int]]
+    # The first list constitutes batch_size list of tokens (list[int]).
+    # Each list of tokens constitutes up to 15 ints.
+    return batch_tokens
+
+def compute_frequencies(frequencies: PositionalFrequencies, tokens: list, n: int):
+    n_tokens = len(tokens)
+    for i in range(0, n_tokens - n + 1, 1):
+        ngram = tuple(tokens[i:i+n])
+        frequencies.add(ngram, i)
+
+def compute_ngrams(args, queue: mp.Queue, n: int=2, slice: int=200):
     tokenize = load_tokenizer(args.model_name, args.num_tokens)
+    frequencies = PositionalFrequencies()
 
-    while (data := queue.get(block=True)) is not None:
+    while (docs := queue.get(block=True)) is not None:
         # Wait if queue is being written to or until there are items in the queue
-        print(os.getpid(), "got", len(data), "documents")
+        docs_text = [d["_source"]["text"][:slice] for d in docs]
+
+        tokenized_text = tokenize(docs_text)
+        batch_tokens = filter_tokenizer_results(tokenized_text)
+
+        for tokens in batch_tokens:
+            compute_frequencies(frequencies, tokens, n=n)
+
+    joblib.dump(frequencies, f"{args.output_dir}/{os.getpid()}_unigram_counts.pkl")
 
 
 def create_parser():
@@ -83,7 +109,7 @@ def create_parser():
         "-f",
         "--freq",
         type=int,
-        default=5000,
+        default=128,
         help="Number of documents to process at a time.",
     )
 
@@ -104,20 +130,21 @@ if __name__ == "__main__":
     engine, n_docs = load_elastic_search(args.config_path, args.index, query=query)
 
     # Create a task list
-    tasks = mp.Queue(maxsize=50)
-    results = []
+    tasks = mp.Queue(maxsize=250)
+    errored_docs = []
 
-    pool = mp.Pool(args.n_jobs, compute_unigrams, (args, tasks))
+    pool = mp.Pool(args.n_jobs, compute_ngrams, (args, tasks))
 
     # Iterate over the data
-    data = iter(scroll(engine, query, size=args.freq))
-
     num_iters = math.ceil(n_docs / args.freq)
 
-    for _ in range(num_iters):
-        docs = next(data)
+    scroll_id = None
+    for i in tqdm.tqdm(range(num_iters)):
+        docs, scroll_id = scroll_all_docs(engine, index=args.index, size=args.freq, scroll_id=scroll_id)
         tasks.put(docs, block=True)
 
+    import time
+    time.sleep(120)
     # https://stackoverflow.com/questions/69229049/why-does-multiprocessing-queue-get-block-after-the-queue-is-closed
     for _ in range(args.n_jobs):
         tasks.put(None)
