@@ -12,25 +12,22 @@ def total_docs(es: Elasticsearch, index: str, query: dict, size=1) -> int:
     return data["hits"]["total"]["value"]
 
 
-def scroll(es: Elasticsearch, query: dict, size: int=100, scroll: str="10m", **kwargs) -> dict:
-    data = es.search(query=query, size=size, scroll=scroll, **kwargs)
-    print("Total documents found", data["hits"]["total"])
+def scroll_all_docs(engine: Elasticsearch, index: str, size: int=128, scroll_id: str=None, scroll_time: str="10m") -> dict:
+    query = {"match_all": {}}
 
-    sid = data["_scroll_id"]
-    scroll_size = len(data["hits"]["hits"])
+    if scroll_id is None:
+        data = engine.search(
+            index=index, query=query, size=size, scroll=scroll_time
+        )
+    else:
+        data = engine.scroll(scroll_id=scroll_id, scroll=scroll_time)
 
-    while scroll_size > 0:
-        # print("Processing", scroll_size, "documents")
+        if len(data["hits"]["hits"]) == 0:
+            engine.clear_scroll(scroll_id=scroll_id)
 
-        yield data["hits"]["hits"]
+    # Get document identifiers
+    return data["hits"]["hits"], data["_scroll_id"]
 
-        data = es.scroll(scroll_id=sid, scroll=scroll)
-        sid = data["_scroll_id"]
-
-        scroll_size = len(data["hits"]["hits"])
-
-    es.clear_scroll(scroll_id=sid)
-    yield None
 
 
 def get_name(d: dict) -> str:

@@ -10,6 +10,7 @@ import frequencies
 
 
 def read_yaml_config(config_file: str) -> dict:
+    import yaml
     with open(config_file, "r") as f:
         return yaml.safe_load(f)
 
