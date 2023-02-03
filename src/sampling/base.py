@@ -1,10 +1,10 @@
 """"""
 from abc import ABC, abstractmethod
-from utils import set_seed, create_history, create_model_kwargs
+from sampling.utils import set_seed, create_history, create_model_kwargs
 
 import math
 import torch
-import utils_models
+import sampling.utils_models as utils_models
 
 
 class BaseSampler:

@@ -1,5 +1,5 @@
 from tqdm import tqdm
-from base import BaseSampler
+from sampling.base import BaseSampler
 
 import torch
 import torch.nn.functional as F
