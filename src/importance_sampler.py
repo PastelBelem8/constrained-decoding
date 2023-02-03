@@ -163,6 +163,93 @@ class ImportanceSampler(BaseSampler):
         # -------------------------------------------------------------------------
         return torch.exp(intermediate_model_log_prob), samples
 
+    def _sample_marginal(self, input_ids, terms_ids, max_num_tokens, model_kwargs):
+        input_ids = input_ids.to(self.device)
+        terms_ids = terms_ids.to(self.device)
+        model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
+
+        n_samples, samples = input_ids.shape[0], input_ids.clone()
+        intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32).to(self.device)
+        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(self.device)
+
+        for i in tqdm(range(max_num_tokens)):
+            model_inputs = self.model.prepare_inputs_for_generation(
+                samples, **model_kwargs
+            )
+            model_outputs = self.model.forward(**model_inputs)
+            # logits: (n_samples, current_len, vocab_size)
+            logits = model_outputs.logits
+            # Select next token logits: (n_samples, vocab_size)
+            logits = logits[:, -1, :]
+
+            # ---------------------------------------------------------------------
+            # 1. Sample next token based on distribution
+            # ---------------------------------------------------------------------
+            # Categorical.sample() returns a sampled index per each row.
+            # samples is of shape (n_samples, 1)
+            next_tokens = (
+                torch.distributions.Categorical(logits=logits).sample().unsqueeze(-1)
+            ).to(self.device)
+
+            # ---------------------------------------------------------------------
+            # 2. Accumulate log_probabilities
+            # ---------------------------------------------------------------------
+            model_prob = F.softmax(logits, dim=-1)
+            # model_prob contains the probability that one of the terms appears
+            model_prob = model_prob[..., terms_ids].sum(dim=-1).unsqueeze(-1)
+
+            # ---------------------------------------------------------------------
+            # 3. Handle EOS sequences:
+            # ---------------------------------------------------------------------
+            # - If sequence is finished, ignore sampled token and use padding.
+            next_tokens = torch.where(
+                unfinished_sequences,
+                next_tokens,
+                self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+            )
+            # - If sequence is finished set model_prob to 1 so it does not affect log sum
+            model_prob = torch.where(unfinished_sequences, model_prob, 1)
+
+            # - Update the mask when you identify end of sequence tokens
+            if self.tokenizer.eos_token_id is not None:
+                unfinished_sequences = torch.logical_and(
+                    unfinished_sequences,
+                    # Set current unfinished to 1 if next token is not EOS
+                    next_tokens != self.tokenizer.eos_token_id,
+                )
+
+            # 5. Update intermediate artifacts
+            intermediate_model_log_prob += torch.log(model_prob)
+
+            samples = torch.cat([samples, next_tokens], dim=-1)
+            # ^Note: decoder-architectures will need the whole sequence at decoding time
+
+            self.model._update_model_kwargs_for_generation(
+                model_outputs,
+                model_kwargs,
+                is_encoder_decoder=self.model.config.is_encoder_decoder,
+            )
+
+            self.model_prob_occur.append(model_prob.clone())
+            self.logits.append(F.log_softmax(logits, dim=-1))
+            self.next_tokens.append(next_tokens.clone())
+            self.cum_model_log_prob_not_occur.append(
+                1 - intermediate_model_log_prob.clone()
+            )
+            self.unfinished_sequences.append(unfinished_sequences.clone())
+
+            # If all sequences are finished (unfinished==0), don't keep generating
+            if (unfinished_sequences == 0).all():
+                print("=========================================================")
+                print(f"Sequences finished prematurely ({i+1}/{max_num_tokens}).")
+                print("=========================================================")
+                break
+
+        # -------------------------------------------------------------------------
+        # 5. Compute probability of number of times element in C do not occur
+        # -------------------------------------------------------------------------
+        return torch.exp(intermediate_model_log_prob), samples
+
     def estimate_hit_probability(self, *args, **kwargs):
         """$P(\pi(K) = a) = P(X_K = a, X_{<K} \neq a) = P(X_K = a| X_{<K} \neq a) P(X_{<K} \neq a)$"""
         if self.model_prob_occur == []:

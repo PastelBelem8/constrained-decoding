@@ -73,10 +73,15 @@ class BaseSampler:
         raise NotImplemented
 
     @abstractmethod
+    def _sample_marginal(self, input_ids, terms_ids, max_num_tokens, model_kwargs):
+        raise NotImplementedError
+
+    @abstractmethod
     def estimate_hit_probability(self, *args, **kwargs):
         """Estimates the hitting time probabilities of any of the terms."""
         raise NotImplementedError
 
+    @abstractmethod
     def estimate_hit_probability_A_before_B(self, terms_A, terms_B, history=None, *args, **kwargs):
         """Estimates the probability that any term in terms_A occurs before
         any of the terms in B.
@@ -86,6 +91,44 @@ class BaseSampler:
         terms_A and terms_B should be non-overlapping.
         """
         raise NotImplemented
+
+    def estimate_marginals(
+        self,
+        input_str: str,
+        terms: str,
+        num_sequences: int,
+        max_num_tokens: int,
+        seed: int,
+        add_special_tokens: bool=False,
+    ):
+        set_seed(seed)
+        self.reset_intermediate_results()
+
+        bos_token_id = (
+            self.tokenizer.bos_token_id or self.model.config.decoder_start_token_id
+        )
+
+        input_ids = self.tokenizer(
+            input_str, return_tensors="pt", add_special_tokens=add_special_tokens
+        ).input_ids if input_str is not None else None
+
+        terms_ids = self.tokenizer(terms, add_special_tokens=add_special_tokens).input_ids
+
+        history = create_history(num_sequences, input_ids, bos_token_id)
+        sampling_specific_kwargs = create_model_kwargs(
+            history, self.model, self.tokenizer
+        )
+
+        # Avoid duplicate ids (FIXME: May not make sense, when we add support for phrases)
+        avoid_terms_ids = torch.tensor(avoid_terms_ids).squeeze().unique()
+
+        results = self._sample_marginal(
+            terms_ids=terms_ids,
+            max_num_tokens=max_num_tokens,
+            **sampling_specific_kwargs,
+        )
+
+        return results
 
     def _reset_intermediate_results(self):
         pass
@@ -116,7 +159,11 @@ class BaseSampler:
         ).input_ids
         # ^Note: some tokenizers encode the same term differently depending on
         # whether they are preceeded with a space or not
-        # FIXME: Address this situation
+        # ----------------------------------------------------------------------
+        # Update: On Jan 26th, we agreed that this should be left to the user
+        # of the framework to handle. It would depend on the context in which
+        # the word would appear.
+        # ----------------------------------------------------------------------
 
         history = create_history(num_sequences, input_ids, bos_token_id)
         sampling_specific_kwargs = create_model_kwargs(
