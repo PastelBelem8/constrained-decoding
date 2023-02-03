@@ -248,7 +248,7 @@ class ImportanceSampler(BaseSampler):
         # -------------------------------------------------------------------------
         # 5. Compute probability of number of times element in C do not occur
         # -------------------------------------------------------------------------
-        return torch.exp(intermediate_model_log_prob), samples
+        return self.model_prob_occur, samples
 
     def estimate_hit_probability(self, *args, **kwargs):
         """$P(\pi(K) = a) = P(X_K = a, X_{<K} \neq a) = P(X_K = a| X_{<K} \neq a) P(X_{<K} \neq a)$"""
