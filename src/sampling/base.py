@@ -2,6 +2,7 @@
 from abc import ABC, abstractmethod
 from utils import set_seed, create_history, create_model_kwargs
 
+import math
 import torch
 import utils_models
 
@@ -188,6 +189,28 @@ class BaseSampler:
         self.cum_model_log_prob_not_occur = []  # cumulative prob distribution
         self.unfinished_sequences = []
         self._reset_intermediate_results()
+
+    def compute_confidence_intervals(self, values, width=1):
+        values = values if isinstance(values, list) else [values]
+
+        mean, lb, ub = [], [], []
+        for val in values:
+            mean = val.mean().item()
+            std = val.std().item() / math.sqrt(len(val))
+
+            mean.append(mean)
+            ub.append(mean + width * std)
+            lb.append(mean - width * std)
+
+        return mean, lb, ub
+
+    def decode(self, samples, skip_special_tokens=True, clean_up_tokenization_spaces=True, **kwargs):
+        return self.tokenizer.batch_decode(
+            samples,
+            skip_special_tokens=skip_special_tokens,
+            clean_up_tokenization_spaces=clean_up_tokenization_spaces,
+            *kwargs,
+        )
 
     def to_device(self, *args, **kwargs):
         # https://stackoverflow.com/questions/59560043/what-is-the-difference-between-model-todevice-and-model-model-todevice
