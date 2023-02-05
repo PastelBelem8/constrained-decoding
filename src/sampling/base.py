@@ -57,92 +57,6 @@ class BaseSampler(ABC):
 
         self.reset_intermediate_results()
 
-    @abstractmethod
-    def _sample_not_occur(
-        self,
-        input_ids: Tensor,
-        avoid_terms_ids: Tensor,
-        max_num_tokens: int,
-        model,
-        tokenizer,
-        model_kwargs: dict,
-        return_logits: bool=False,
-    ):
-        """Class-specific sampling procedure that estimates the probability of the
-        specified avoid_terms_ids not occurring in any position up to max_num_tokens.
-
-        Notes
-        -----
-        Examples of class-specific procedures are random/naive sampling and
-        importance sampling.
-
-        Return
-        ------
-        probabilities: array-like of shape (n_samples, 1)
-            The total probability that neither of the specified ids in avoid_terms_ids occurs.
-
-        samples: array-like of shape (n_samples, max_num_tokens)
-            The sampled sequences. Can be useful for debugging purposes. Note that in
-            some cases, the sequences may end prematurely (more likely to happen for
-            larger max_num_tokens values).
-        """
-        raise NotImplemented
-
-    @abstractmethod
-    def _sample_marginal(
-        self,
-        input_ids: Tensor,
-        terms_ids: Tensor,
-        max_num_tokens: int,
-        model_kwargs: dict,
-        return_logits: bool=False,
-    ):
-        """Compute the probability of any of terms appearing in any position."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def estimate_hit_probability(self, *args, **kwargs):
-        """Estimates the hitting time probabilities of any of the terms.
-
-        Notes
-        -----
-        It differs from the marginal probability in that it will estimate the
-        probability that any of the terms appears for the first time at position
-        k. This method computes this value for all values of K=1...<max_num_tokens>.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def estimate_hit_probability_A_before_B(
-        self, terms_A: str, terms_B: str, history: Optional[str] = None, *args, **kwargs
-    ):
-        """Estimates the probability that any term in terms_A occurs before
-        any of the terms in B when conditioned on the history.
-
-        Notes
-        -----
-        terms_A and terms_B should be non-overlapping.
-        """
-        raise NotImplemented
-
-    def batch_estimate(self, fn:  callable, num_sequences: int, seed: int, batch_size=32, **kwargs):
-        assert num_sequences >= batch_size, "'num_sequences' < 'batch_size"
-        set_seed(seed)
-
-        # Compute number of iterations
-        n_iters = num_sequences // batch_size + num_sequences % batch_size
-
-        # A priori compute seeds to avoid biased seed creation
-        batch_seeds = torch.randint(0, 10**6, (n_iters,))
-
-        results = []
-        for i, seq_no in tqdm(enumerate(range(0, num_sequences, batch_size))):
-            batch_seq_size = min(batch_size, num_sequences - seq_no)
-            res = fn(seed=batch_seeds[i], num_sequences=batch_seq_size, **kwargs)
-            results.append(res)
-
-        return results
-
     def _estimate_base(
         self,
         estimator_fn: callable,
@@ -189,6 +103,94 @@ class BaseSampler(ABC):
             max_num_tokens=max_num_tokens,
             **sampling_specific_kwargs,
         )
+
+        return results
+
+    @abstractmethod
+    def _sample_not_occur(
+        self,
+        input_ids: Tensor,
+        avoid_terms_ids: Tensor,
+        max_num_tokens: int,
+        model,
+        tokenizer,
+        model_kwargs: dict,
+        return_logits: bool = False,
+    ):
+        """Class-specific sampling procedure that estimates the probability of the
+        specified avoid_terms_ids not occurring in any position up to max_num_tokens.
+
+        Notes
+        -----
+        Examples of class-specific procedures are random/naive sampling and
+        importance sampling.
+
+        Return
+        ------
+        probabilities: array-like of shape (n_samples, 1)
+            The total probability that neither of the specified ids in avoid_terms_ids occurs.
+
+        samples: array-like of shape (n_samples, max_num_tokens)
+            The sampled sequences. Can be useful for debugging purposes. Note that in
+            some cases, the sequences may end prematurely (more likely to happen for
+            larger max_num_tokens values).
+        """
+        raise NotImplemented
+
+    @abstractmethod
+    def _sample_marginal(
+        self,
+        input_ids: Tensor,
+        terms_ids: Tensor,
+        max_num_tokens: int,
+        model_kwargs: dict,
+        return_logits: bool = False,
+    ):
+        """Compute the probability of any of terms appearing in any position."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def estimate_hit_probability(self, *args, **kwargs):
+        """Estimates the hitting time probabilities of any of the terms.
+
+        Notes
+        -----
+        It differs from the marginal probability in that it will estimate the
+        probability that any of the terms appears for the first time at position
+        k. This method computes this value for all values of K=1...<max_num_tokens>.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def estimate_hit_probability_A_before_B(
+        self, terms_A: str, terms_B: str, history: Optional[str] = None, *args, **kwargs
+    ):
+        """Estimates the probability that any term in terms_A occurs before
+        any of the terms in B when conditioned on the history.
+
+        Notes
+        -----
+        terms_A and terms_B should be non-overlapping.
+        """
+        raise NotImplemented
+
+    def batch_estimate(
+        self, fn: callable, num_sequences: int, seed: int, batch_size=32, **kwargs
+    ):
+        assert num_sequences >= batch_size, "'num_sequences' < 'batch_size"
+        set_seed(seed)
+
+        # Compute number of iterations
+        n_iters = num_sequences // batch_size + num_sequences % batch_size
+
+        # A priori compute seeds to avoid biased seed creation
+        batch_seeds = torch.randint(0, 10**6, (n_iters,))
+
+        results = []
+        for i, seq_no in tqdm(enumerate(range(0, num_sequences, batch_size))):
+            batch_seq_size = min(batch_size, num_sequences - seq_no)
+            res = fn(seed=batch_seeds[i], num_sequences=batch_seq_size, **kwargs)
+            results.append(res)
 
         return results
 

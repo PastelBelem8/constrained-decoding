@@ -8,14 +8,23 @@ import torch.nn.functional as F
 class NaiveSampler(BaseSampler):
     """Randomly sample tokens from the specified model."""
 
-    def _sample_not_occur(self, input_ids, avoid_terms_ids, max_num_tokens, model_kwargs, return_logits=False):
+    def _sample_not_occur(
+        self,
+        input_ids,
+        avoid_terms_ids,
+        max_num_tokens,
+        model_kwargs,
+        return_logits=False,
+    ):
         input_ids = input_ids.to(self.device)
         avoid_terms_ids = avoid_terms_ids.to(self.device)
         model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
 
         n_samples, history_length = input_ids.shape
         samples = input_ids.clone()
-        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(self.device)
+        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(
+            self.device
+        )
 
         all_logits = []
         for i in tqdm(range(max_num_tokens)):

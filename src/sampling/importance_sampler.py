@@ -55,14 +55,26 @@ class ImportanceSampler(BaseSampler):
     model_kwargs: dict
         Keyword arguments to use during generation of the continuations.
     """
-    def _sample_not_occur(self, input_ids, avoid_terms_ids, max_num_tokens, model_kwargs, return_logits=False):
+
+    def _sample_not_occur(
+        self,
+        input_ids,
+        avoid_terms_ids,
+        max_num_tokens,
+        model_kwargs,
+        return_logits=False,
+    ):
         input_ids = input_ids.to(self.device)
         avoid_terms_ids = avoid_terms_ids.to(self.device)
         model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
 
         n_samples, samples = input_ids.shape[0], input_ids.clone()
-        intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32).to(self.device)
-        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(self.device)
+        intermediate_model_log_prob = torch.zeros(
+            (n_samples, 1), dtype=torch.float32
+        ).to(self.device)
+        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(
+            self.device
+        )
 
         all_logits = []
         for i in tqdm(range(max_num_tokens)):
@@ -160,8 +172,12 @@ class ImportanceSampler(BaseSampler):
         model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
 
         n_samples, samples = input_ids.shape[0], input_ids.clone()
-        intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32).to(self.device)
-        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(self.device)
+        intermediate_model_log_prob = torch.zeros(
+            (n_samples, 1), dtype=torch.float32
+        ).to(self.device)
+        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(
+            self.device
+        )
 
         marginals_prob = []
         for i in tqdm(range(max_num_tokens)):
@@ -189,7 +205,9 @@ class ImportanceSampler(BaseSampler):
             model_log_prob = F.log_softmax(logits, dim=-1)
 
             current_seq_prob = torch.exp(intermediate_model_log_prob + model_log_prob)
-            marginals_prob.append(current_seq_prob[..., terms_ids].sum(dim=-1).unsqueeze(-1))
+            marginals_prob.append(
+                current_seq_prob[..., terms_ids].sum(dim=-1).unsqueeze(-1)
+            )
 
             # model_prob contains the probability of the current tokens
             model_prob = torch.gather(F.softmax(logits), dim=-1, index=next_tokens)
@@ -286,12 +304,13 @@ class ImportanceSampler(BaseSampler):
         num_sequences: int,
         max_num_tokens: int,
         seed: int,
-        add_special_tokens: bool=False,
+        add_special_tokens: bool = False,
     ) -> list:
         # Verify no repeated values in both set of terms
         terms_AB = terms_A + " " + terms_B
-        assert len(terms_AB.split()) == len(set(terms_AB.split())), \
-            f"Invalid values: '{terms_A}' overlap terms in '{terms_B}'"
+        assert len(terms_AB.split()) == len(
+            set(terms_AB.split())
+        ), f"Invalid values: '{terms_A}' overlap terms in '{terms_B}'"
 
         # Compute the miss probabilities of the terms_A + terms_B
         _, miss_probs_cdf = self.estimate_hit_probability(
@@ -300,7 +319,7 @@ class ImportanceSampler(BaseSampler):
             num_sequences=num_sequences,
             max_num_tokens=max_num_tokens,
             seed=seed,
-            add_special_tokens=add_special_tokens
+            add_special_tokens=add_special_tokens,
         )
 
         # Compute the probabilities of terms A occurring
@@ -314,9 +333,9 @@ class ImportanceSampler(BaseSampler):
             probs_occur = F.softmax(self.logits[i], dim=-1)
             probs_occur = probs_occur[..., terms_A_ids].sum(dim=-1).unsqueeze(-1).item()
 
-            if i == 0: # terms_A occur at timestep 0
+            if i == 0:  # terms_A occur at timestep 0
                 total_prob.append(probs_occur.mean().item())
             else:
-                total_prob.append((miss_prob[i-1] * probs_occur).mean().item())
+                total_prob.append((miss_prob[i - 1] * probs_occur).mean().item())
 
         return total_prob
