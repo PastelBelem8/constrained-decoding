@@ -8,7 +8,7 @@ import torch.nn.functional as F
 class NaiveSampler(BaseSampler):
     """Randomly sample tokens from the specified model."""
 
-    def _sample(self, input_ids, avoid_terms_ids, max_num_tokens, model_kwargs):
+    def _sample_not_occur(self, input_ids, avoid_terms_ids, max_num_tokens, model_kwargs, return_logits=False):
         input_ids = input_ids.to(self.device)
         avoid_terms_ids = avoid_terms_ids.to(self.device)
         model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
@@ -17,6 +17,7 @@ class NaiveSampler(BaseSampler):
         samples = input_ids.clone()
         unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(self.device)
 
+        all_logits = []
         for i in tqdm(range(max_num_tokens)):
             model_inputs = self.model.prepare_inputs_for_generation(
                 samples, **model_kwargs, device=self.device
@@ -70,18 +71,9 @@ class NaiveSampler(BaseSampler):
             # in model_kwargs. This avoid having to feed in the whole decoding
             # sequence at generation (thus making it faster).
             # ---------------------------------------------------------------------
-            model_prob = F.softmax(logits, dim=-1)
-            model_prob_occur = (
-                model_prob[..., avoid_terms_ids].sum(dim=-1).unsqueeze(-1)
-            )
-            self.model_prob_occur.append(model_prob_occur.clone())
-            self.logits.append(F.log_softmax(logits, dim=-1))
-            self.next_tokens.append(next_tokens)
-            self.unfinished_sequences.append(unfinished_sequences.clone())
 
-            # In naive sampling, the probability of occurring specific tokens
-            # consists of computing how many times any of the terms happened
-            # self.cum_model_log_prob_not_occur.append()  # FIXME: Implement this
+            if return_logits:
+                all_logits.append(F.log_softmax(logits, dim=-1))
 
             # Stop whenever all sequences are finished (unfinished==0)
             if (unfinished_sequences == 0).all():

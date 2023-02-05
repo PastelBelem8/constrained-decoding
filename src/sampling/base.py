@@ -2,6 +2,7 @@
 from abc import ABC, abstractmethod
 from sampling.utils import set_seed, create_history, create_model_kwargs
 from typing import Union, List, Optional
+from tqdm import tqdm
 
 import math
 import torch
@@ -57,7 +58,7 @@ class BaseSampler(ABC):
         self.reset_intermediate_results()
 
     @abstractmethod
-    def _sample(
+    def _sample_not_occur(
         self,
         input_ids: Tensor,
         avoid_terms_ids: Tensor,
@@ -65,6 +66,7 @@ class BaseSampler(ABC):
         model,
         tokenizer,
         model_kwargs: dict,
+        return_logits: bool=False,
     ):
         """Class-specific sampling procedure that estimates the probability of the
         specified avoid_terms_ids not occurring in any position up to max_num_tokens.
@@ -93,6 +95,7 @@ class BaseSampler(ABC):
         terms_ids: Tensor,
         max_num_tokens: int,
         model_kwargs: dict,
+        return_logits: bool=False,
     ):
         """Compute the probability of any of terms appearing in any position."""
         raise NotImplementedError
@@ -122,8 +125,27 @@ class BaseSampler(ABC):
         """
         raise NotImplemented
 
-    def estimate_marginals(
+    def batch_estimate(self, fn:  callable, num_sequences: int, seed: int, batch_size=32, **kwargs):
+        assert num_sequences >= batch_size, "'num_sequences' < 'batch_size"
+        set_seed(seed)
+
+        # Compute number of iterations
+        n_iters = num_sequences // batch_size + num_sequences % batch_size
+
+        # A priori compute seeds to avoid biased seed creation
+        batch_seeds = torch.randint(0, 10**6, (n_iters,))
+
+        results = []
+        for i, seq_no in tqdm(enumerate(range(0, num_sequences, batch_size))):
+            batch_seq_size = min(batch_size, num_sequences - seq_no)
+            res = fn(seed=batch_seeds[i], num_sequences=batch_seq_size, **kwargs)
+            results.append(res)
+
+        return results
+
+    def _estimate_base(
         self,
+        estimator_fn: callable,
         input_str: str,
         terms: str,
         num_sequences: int,
@@ -162,7 +184,7 @@ class BaseSampler(ABC):
         # Avoid duplicate ids (FIXME: May not make sense, when we add support for phrases)
         terms_ids = torch.tensor(terms_ids).squeeze().unique()
 
-        results = self._sample_marginal(
+        results = estimator_fn(
             terms_ids=terms_ids,
             max_num_tokens=max_num_tokens,
             **sampling_specific_kwargs,
@@ -170,11 +192,31 @@ class BaseSampler(ABC):
 
         return results
 
-    def _reset_intermediate_results(self):
-        """Class-specific variables"""
-        pass
+    def estimate_marginals(
+        self,
+        input_str: str,
+        terms: str,
+        num_sequences: int,
+        max_num_tokens: int,
+        seed: int,
+        add_special_tokens: bool = False,
+    ):
+        """Estimates the probability that any of the terms occurs in any of
+        the positions. That is, what's the probability of randomly selecting
+        a token from our model distribution and picking one of the specified
+        terms at each position k."""
 
-    def estimate(
+        return self._estimate_base(
+            self._sample_marginal,
+            input_str=input_str,
+            terms=terms,
+            num_sequences=num_sequences,
+            max_num_tokens=max_num_tokens,
+            seed=seed,
+            add_special_tokens=add_special_tokens,
+        )
+
+    def estimate_not_occurring(
         self,
         input_str: str,
         avoid_terms: str,
@@ -190,55 +232,16 @@ class BaseSampler(ABC):
         -----
         Intermediate artifacts will be kept after the execution of this method.
         """
-        set_seed(seed)
-        self.reset_intermediate_results()
 
-        bos_token_id = (
-            self.tokenizer.bos_token_id or self.model.config.decoder_start_token_id
-        )
-
-        input_ids = (
-            self.tokenizer(
-                input_str, return_tensors="pt", add_special_tokens=add_special_tokens
-            ).input_ids
-            if input_str is not None
-            else None
-        )
-
-        avoid_terms_ids = self.tokenizer(
-            avoid_terms, add_special_tokens=add_special_tokens
-        ).input_ids
-        # ^Note: some tokenizers encode the same term differently depending on
-        # whether they are preceeded with a space or not
-        # ----------------------------------------------------------------------
-        # Update: On Jan 26th, we agreed that this should be left to the user
-        # of the framework to handle. It would depend on the context in which
-        # the word would appear.
-        # ----------------------------------------------------------------------
-
-        history = create_history(num_sequences, input_ids, bos_token_id)
-        sampling_specific_kwargs = create_model_kwargs(
-            history, self.model, self.tokenizer
-        )
-
-        # Avoid duplicate ids (FIXME: May not make sense, when we add support for phrases)
-        avoid_terms_ids = torch.tensor(avoid_terms_ids).squeeze().unique()
-
-        results = self._sample(
-            avoid_terms_ids=avoid_terms_ids,
+        return self._estimate_base(
+            self._sample_not_occur,
+            input_str=input_str,
+            terms=avoid_terms,
+            num_sequences=num_sequences,
             max_num_tokens=max_num_tokens,
-            **sampling_specific_kwargs,
+            add_special_tokens=add_special_tokens,
+            seed=seed,
         )
-
-        return results
-
-    def reset_intermediate_results(self):
-        self.model_prob_occur = []
-        self.logits = []
-        self.next_tokens = []
-        self.cum_model_log_prob_not_occur = []  # cumulative prob distribution
-        self.unfinished_sequences = []
-        self._reset_intermediate_results()
 
     def compute_confidence_intervals(
         self, values: List[Tensor], width: int = 1

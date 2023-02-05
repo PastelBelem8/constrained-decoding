@@ -55,11 +55,7 @@ class ImportanceSampler(BaseSampler):
     model_kwargs: dict
         Keyword arguments to use during generation of the continuations.
     """
-
-    def _reset_intermediate_results(self):
-        self.proposal_log_prob = []
-
-    def _sample(self, input_ids, avoid_terms_ids, max_num_tokens, model_kwargs):
+    def _sample_not_occur(self, input_ids, avoid_terms_ids, max_num_tokens, model_kwargs, return_logits=False):
         input_ids = input_ids.to(self.device)
         avoid_terms_ids = avoid_terms_ids.to(self.device)
         model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
@@ -68,6 +64,7 @@ class ImportanceSampler(BaseSampler):
         intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32).to(self.device)
         unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(self.device)
 
+        all_logits = []
         for i in tqdm(range(max_num_tokens)):
             model_inputs = self.model.prepare_inputs_for_generation(
                 samples, **model_kwargs
@@ -142,14 +139,8 @@ class ImportanceSampler(BaseSampler):
             # model_kwargs. This avoid having to feed in the whole decoding
             # sequence at generation (thus making it faster).
             # ---------------------------------------------------------------------
-            self.model_prob_occur.append(1 - model_prob.clone())
-            self.logits.append(F.log_softmax(logits, dim=-1))
-            self.next_tokens.append(next_tokens.clone())
-            self.cum_model_log_prob_not_occur.append(
-                intermediate_model_log_prob.clone()
-            )
-            self.unfinished_sequences.append(unfinished_sequences.clone())
-            self.proposal_log_prob.append(proposal_log_prob.clone())
+            if return_logits:
+                all_logits.append(F.log_softmax(logits, dim=-1))
 
             # If all sequences are finished (unfinished==0), don't keep generating
             if (unfinished_sequences == 0).all():
