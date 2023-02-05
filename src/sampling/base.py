@@ -1,14 +1,18 @@
 """"""
 from abc import ABC, abstractmethod
 from sampling.utils import set_seed, create_history, create_model_kwargs
+from typing import Union, List, Optional
 
 import math
 import torch
 import sampling.utils_models as utils_models
 
+# Type alias
+Tensor = torch.Tensor
 
-class BaseSampler:
-    """
+
+class BaseSampler(ABC):
+    """Abstract sampling class.
 
     Attributes
     ----------
@@ -39,7 +43,6 @@ class BaseSampler:
         model_kwargs=None,
         tokenizer_kwargs=None,
         device=None,
-        debug=False,
     ):
         self.model_name = model_name
         self.model_kwargs = model_kwargs or {}
@@ -55,11 +58,21 @@ class BaseSampler:
 
     @abstractmethod
     def _sample(
-        self, input_ids, avoid_terms_ids, max_num_tokens, model, tokenizer, model_kwargs
+        self,
+        input_ids: Tensor,
+        avoid_terms_ids: Tensor,
+        max_num_tokens: int,
+        model,
+        tokenizer,
+        model_kwargs: dict,
     ):
-        """Specific sampling procedure (e.g., random, importance sampling) that estimates
-        the probability of the specified avoid_terms_ids not occurring in any position up
-        to max_num_tokens.
+        """Class-specific sampling procedure that estimates the probability of the
+        specified avoid_terms_ids not occurring in any position up to max_num_tokens.
+
+        Notes
+        -----
+        Examples of class-specific procedures are random/naive sampling and
+        importance sampling.
 
         Return
         ------
@@ -74,18 +87,34 @@ class BaseSampler:
         raise NotImplemented
 
     @abstractmethod
-    def _sample_marginal(self, input_ids, terms_ids, max_num_tokens, model_kwargs):
+    def _sample_marginal(
+        self,
+        input_ids: Tensor,
+        terms_ids: Tensor,
+        max_num_tokens: int,
+        model_kwargs: dict,
+    ):
+        """Compute the probability of any of terms appearing in any position."""
         raise NotImplementedError
 
     @abstractmethod
     def estimate_hit_probability(self, *args, **kwargs):
-        """Estimates the hitting time probabilities of any of the terms."""
+        """Estimates the hitting time probabilities of any of the terms.
+
+        Notes
+        -----
+        It differs from the marginal probability in that it will estimate the
+        probability that any of the terms appears for the first time at position
+        k. This method computes this value for all values of K=1...<max_num_tokens>.
+        """
         raise NotImplementedError
 
     @abstractmethod
-    def estimate_hit_probability_A_before_B(self, terms_A, terms_B, history=None, *args, **kwargs):
+    def estimate_hit_probability_A_before_B(
+        self, terms_A: str, terms_B: str, history: Optional[str] = None, *args, **kwargs
+    ):
         """Estimates the probability that any term in terms_A occurs before
-        any of the terms in B.
+        any of the terms in B when conditioned on the history.
 
         Notes
         -----
@@ -100,8 +129,12 @@ class BaseSampler:
         num_sequences: int,
         max_num_tokens: int,
         seed: int,
-        add_special_tokens: bool=False,
+        add_special_tokens: bool = False,
     ):
+        """Estimates the probability that any of the terms occurs in any of
+        the positions. That is, what's the probability of randomly selecting
+        a token from our model distribution and picking one of the specified
+        terms at each position k."""
         set_seed(seed)
         self.reset_intermediate_results()
 
@@ -109,11 +142,17 @@ class BaseSampler:
             self.tokenizer.bos_token_id or self.model.config.decoder_start_token_id
         )
 
-        input_ids = self.tokenizer(
-            input_str, return_tensors="pt", add_special_tokens=add_special_tokens
-        ).input_ids if input_str is not None else None
+        input_ids = (
+            self.tokenizer(
+                input_str, return_tensors="pt", add_special_tokens=add_special_tokens
+            ).input_ids
+            if input_str is not None
+            else None
+        )
 
-        terms_ids = self.tokenizer(terms, add_special_tokens=add_special_tokens).input_ids
+        terms_ids = self.tokenizer(
+            terms, add_special_tokens=add_special_tokens
+        ).input_ids
 
         history = create_history(num_sequences, input_ids, bos_token_id)
         sampling_specific_kwargs = create_model_kwargs(
@@ -132,6 +171,7 @@ class BaseSampler:
         return results
 
     def _reset_intermediate_results(self):
+        """Class-specific variables"""
         pass
 
     def estimate(
@@ -141,9 +181,15 @@ class BaseSampler:
         num_sequences: int,
         max_num_tokens: int,
         seed: int,
-        add_special_tokens: bool=False,
+        add_special_tokens: bool = False,
     ):
-        """"""
+        """Estimates the probability of avoid_terms not occurring in the
+        next max_num_tokens.
+
+        Notes
+        -----
+        Intermediate artifacts will be kept after the execution of this method.
+        """
         set_seed(seed)
         self.reset_intermediate_results()
 
@@ -151,9 +197,13 @@ class BaseSampler:
             self.tokenizer.bos_token_id or self.model.config.decoder_start_token_id
         )
 
-        input_ids = self.tokenizer(
-            input_str, return_tensors="pt", add_special_tokens=add_special_tokens
-        ).input_ids if input_str is not None else None
+        input_ids = (
+            self.tokenizer(
+                input_str, return_tensors="pt", add_special_tokens=add_special_tokens
+            ).input_ids
+            if input_str is not None
+            else None
+        )
 
         avoid_terms_ids = self.tokenizer(
             avoid_terms, add_special_tokens=add_special_tokens
@@ -190,7 +240,18 @@ class BaseSampler:
         self.unfinished_sequences = []
         self._reset_intermediate_results()
 
-    def compute_confidence_intervals(self, values, width=1):
+    def compute_confidence_intervals(
+        self, values: List[Tensor], width: int = 1
+    ) -> tuple:
+        """Calculate confidence intervals for the specified values.
+
+        Notes
+        -----
+        When provided a list, the method assumes it is a K-sized list
+        where each element is a tensor with N probability values.
+        K would be the number of decoding steps and N would be the
+        number of sampled sequences.
+        """
         values = values if isinstance(values, list) else [values]
 
         mean, lb, ub = [], [], []
@@ -204,7 +265,13 @@ class BaseSampler:
 
         return mean, lb, ub
 
-    def decode(self, samples, skip_special_tokens=True, clean_up_tokenization_spaces=True, **kwargs):
+    def decode(
+        self,
+        samples: Tensor,
+        skip_special_tokens: bool = True,
+        clean_up_tokenization_spaces: bool = True,
+        **kwargs
+    ) -> List[str]:
         return self.tokenizer.batch_decode(
             samples,
             skip_special_tokens=skip_special_tokens,
