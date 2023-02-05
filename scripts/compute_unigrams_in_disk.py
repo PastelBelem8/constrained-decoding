@@ -62,8 +62,9 @@ def compute_frequencies(frequencies: PositionalFrequencies, tokens: list, n: int
 def compute_ngrams(args, n: int=2, slice: int=300):
     tokenize = load_tokenizer(args.model_name, args.num_tokens)
     frequencies = defaultdict(PositionalFrequencies)
+    data_iter = iter(read_file(args.file))
 
-    while (data := read_file(args.file)) is not (None, None):
+    while (data := next(data_iter)) != (None, None):
         num_file, doc = data
         subset = doc["meta"]["pile_set_name"]
         text = [doc["text"][:slice]] # Creating list to avoid breaking code
@@ -74,34 +75,21 @@ def compute_ngrams(args, n: int=2, slice: int=300):
         for tokens in batch_tokens:
             compute_frequencies(frequencies[subset], tokens, n=n)
 
-        if num_file % 10_000 == 0:
+        if num_file % 10_001 == 0:
             print(f"Processed {num_file}")
-            break
 
     print(len(frequencies))
 
-    for pile_subset, counts in frequencies:
-        joblib.dump(counts, f"{args.output_dir}/{args.file}_{pile_subset}_{n}-counts.pkl")
-
+    filename = args.file.rpartition("/")[-1]
+    for pile_subset, counts in frequencies.items():
+        joblib.dump(counts, f"{args.output_dir}/{filename}_{pile_subset}_{n}-counts.pkl")
 
 def create_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-c",
-        "--config-path",
-        default="./scripts/configs/elastic-search.yml",
-        help="Filepath for Elastic search configuration file.",
-    )
-    parser.add_argument(
-        "-f", "--pile-file", type=str,
+        "-file", "--file", type=str,
         required=True,
-        help="Name of the PILE file to be counted"
-    )
-    parser.add_argument(
-        "-ix",
-        "--index",
-        default="re_pile",
-        help="Index in Elastic Search",
+        help="Path to the PILE file to be indexed"
     )
     parser.add_argument(
         "-m",
@@ -109,7 +97,6 @@ def create_parser():
         default="EleutherAI/gpt-neo-125M",
         help="Model name",
     )
-    parser.add_argument("-n", "--n-jobs", type=int, default=16, help="Number of CPUs.")
     parser.add_argument(
         "-K",
         "--num-tokens",
@@ -118,17 +105,14 @@ def create_parser():
         help="Number of tokens to process from each document.",
     )
     parser.add_argument(
-        "-f",
-        "--freq",
-        type=int,
-        default=128,
-        help="Number of documents to process at a time.",
-    )
-
-    parser.add_argument(
         "-n", "--ngram-size",
         type=int,
         default=2
+    )
+    parser.add_argument(
+        "-s", "--slice",
+        type=int,
+        default=300
     )
 
     parser.add_argument(
@@ -144,4 +128,4 @@ if __name__ == "__main__":
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
-    compute_ngrams(args, args.ngram_size)
+    compute_ngrams(args, args.ngram_size, args.slice)
