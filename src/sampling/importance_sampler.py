@@ -172,6 +172,7 @@ class ImportanceSampler(BaseSampler):
         intermediate_model_log_prob = torch.zeros((n_samples, 1), dtype=torch.float32).to(self.device)
         unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(self.device)
 
+        marginals_prob = []
         for i in tqdm(range(max_num_tokens)):
             model_inputs = self.model.prepare_inputs_for_generation(
                 samples, **model_kwargs
@@ -194,9 +195,13 @@ class ImportanceSampler(BaseSampler):
             # ---------------------------------------------------------------------
             # 2. Accumulate log_probabilities
             # ---------------------------------------------------------------------
-            model_prob = F.softmax(logits, dim=-1)
-            # model_prob contains the probability that one of the terms appears
-            model_prob = model_prob[..., terms_ids].sum(dim=-1).unsqueeze(-1)
+            model_log_prob = F.log_softmax(logits, dim=-1)
+
+            current_seq_prob = torch.exp(intermediate_model_log_prob + model_log_prob)
+            marginals_prob.append(current_seq_prob[..., terms_ids].sum(dim=-1).unsqueeze(-1))
+
+            # model_prob contains the probability of the current tokens
+            model_prob = torch.gather(F.softmax(logits), dim=-1, index=next_tokens)
 
             # ---------------------------------------------------------------------
             # 3. Handle EOS sequences:
@@ -230,14 +235,6 @@ class ImportanceSampler(BaseSampler):
                 is_encoder_decoder=self.model.config.is_encoder_decoder,
             )
 
-            self.model_prob_occur.append(model_prob.clone())
-            self.logits.append(F.log_softmax(logits, dim=-1))
-            self.next_tokens.append(next_tokens.clone())
-            self.cum_model_log_prob_not_occur.append(
-                1 - intermediate_model_log_prob.clone()
-            )
-            self.unfinished_sequences.append(unfinished_sequences.clone())
-
             # If all sequences are finished (unfinished==0), don't keep generating
             if (unfinished_sequences == 0).all():
                 print("=========================================================")
@@ -248,7 +245,7 @@ class ImportanceSampler(BaseSampler):
         # -------------------------------------------------------------------------
         # 5. Compute probability of number of times element in C do not occur
         # -------------------------------------------------------------------------
-        return self.model_prob_occur, samples
+        return marginals_prob, samples
 
     def estimate_hit_probability(self, *args, **kwargs):
         """$P(\pi(K) = a) = P(X_K = a, X_{<K} \neq a) = P(X_K = a| X_{<K} \neq a) P(X_{<K} \neq a)$"""
