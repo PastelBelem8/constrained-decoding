@@ -38,6 +38,6 @@ def get_device(device: str) -> str:
     import torch
 
     if device is None:
-        return "gpu" if torch.cuda.is_available() else "cpu"
+        return "cuda" if torch.cuda.is_available() else "cpu"
     else:
         return device

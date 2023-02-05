@@ -160,7 +160,7 @@ class BaseSampler(ABC):
         )
 
         # Avoid duplicate ids (FIXME: May not make sense, when we add support for phrases)
-        avoid_terms_ids = torch.tensor(avoid_terms_ids).squeeze().unique()
+        terms_ids = torch.tensor(terms_ids).squeeze().unique()
 
         results = self._sample_marginal(
             terms_ids=terms_ids,
@@ -254,16 +254,15 @@ class BaseSampler(ABC):
         """
         values = values if isinstance(values, list) else [values]
 
-        mean, lb, ub = [], [], []
+        means, stds = [], []
         for val in values:
             mean = val.mean().item()
             std = val.std().item() / math.sqrt(len(val))
 
-            mean.append(mean)
-            ub.append(mean + width * std)
-            lb.append(mean - width * std)
+            means.append(mean)
+            stds.append(std)
 
-        return mean, lb, ub
+        return means, stds
 
     def decode(
         self,
