@@ -2,9 +2,10 @@ import torch
 
 
 class SamplingOutput:
-    def __init__(self, probs, samples, desc, logits=None):
+    def __init__(self, probs, samples, terms_ids, desc, logits=None):
         self.probs = probs
         self.samples = samples
+        self.terms_ids = terms_ids
         self.description = desc
         self.logits = logits
 
@@ -13,6 +14,7 @@ class SamplingOutput:
             return self
 
         assert self.description == output.description
+        assert self.terms_ids == output.terms_ids
         assert len(self.probs) == len(output.probs)
         assert len(self.samples) == len(output.samples)
         assert len(self.logits) == len(output.logits)
@@ -28,4 +30,10 @@ class SamplingOutput:
             if len(self.logits) > 0:
                 new_logits.append(torch.vstack((self.logits[i], output.logits[i])))
 
-        return SamplingOutput(new_probs, new_samples, self.desc, new_logits)
+        return SamplingOutput(
+            probs=new_probs,
+            samples=new_samples,
+            terms_ids=self.terms_ids,
+            desc=self.desc,
+            logits=new_logits,
+        )
