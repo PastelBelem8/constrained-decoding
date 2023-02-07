@@ -118,13 +118,12 @@ class NaiveSampler(BaseSampler):
         assert sampling_out.description == "NaiveSampler._sample_not_occur"
         assert len(sampling_out.probs) == sampling_out.samples.shape[1]
 
-        num_tokens = len(sampling_out.probs)
-
         samples_term_mask = torch.isin(
-            sampling_out.samples[:,i],
+            sampling_out.samples,
             test_elements=sampling_out.terms_ids,
         )
 
+        num_tokens = len(sampling_out.probs)
         marginals = [
             samples_term_mask[:, i].any(dim=-1)
             for i in range(num_tokens)
@@ -134,11 +133,27 @@ class NaiveSampler(BaseSampler):
             probs=marginals,
             samples=sampling_out.samples,
             terms_ids=sampling_out.terms_ids,
-            desc=sampling_out.description,
+            desc="NaiveSampler._sample_marginal",
             logits=sampling_out.logits,
         )
 
+    def estimate_hit_probability(self, sampling_out: SamplingOutput) -> SamplingOutput:
+        assert sampling_out.description == "NaiveSampler._sample_not_occur"
+        assert len(sampling_out.probs) == sampling_out.samples.shape[1]
 
+        samples_mask = torch.isin(
+            sampling_out.samples, test_elements=sampling_out.terms_ids,
+        )
+        samples_mask = torch.cumsum(samples_mask, dim=-1)
 
-    def estimate_hit_probability(self):
-        raise NotImplementedError
+        hit_probs = [samples_mask[:, i]]
+        for i in range(1, len(sampling_out.probs)):
+            hit_probs.append(samples_mask[:, i] - samples_mask[:, i-1])
+
+        return SamplingOutput(
+            probs=hit_probs,
+            samples=sampling_out.samples,
+            terms_ids=sampling_out.terms_ids,
+            desc="NaiveSampler.estimate_hit_probability",
+            logits=sampling_out.logits,
+        )
