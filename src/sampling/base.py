@@ -1,7 +1,8 @@
 """"""
 from abc import ABC, abstractmethod
+from sampling.data_objects import SamplingOutput
 from sampling.utils import set_seed, create_history, create_model_kwargs
-from typing import Union, List, Optional
+from typing import List, Optional
 from tqdm import tqdm
 
 import math
@@ -55,8 +56,6 @@ class BaseSampler(ABC):
         self.device = utils_models.get_device(device)
         self.model.to(self.device)
 
-        self.reset_intermediate_results()
-
     def _estimate_base(
         self,
         estimator_fn: callable,
@@ -66,13 +65,12 @@ class BaseSampler(ABC):
         max_num_tokens: int,
         seed: int,
         add_special_tokens: bool = False,
-    ):
+    ) -> SamplingOutput:
         """Estimates the probability that any of the terms occurs in any of
         the positions. That is, what's the probability of randomly selecting
         a token from our model distribution and picking one of the specified
         terms at each position k."""
         set_seed(seed)
-        self.reset_intermediate_results()
 
         bos_token_id = (
             self.tokenizer.bos_token_id or self.model.config.decoder_start_token_id
@@ -116,7 +114,7 @@ class BaseSampler(ABC):
         tokenizer,
         model_kwargs: dict,
         return_logits: bool = False,
-    ):
+    ) -> SamplingOutput:
         """Class-specific sampling procedure that estimates the probability of the
         specified avoid_terms_ids not occurring in any position up to max_num_tokens.
 
@@ -145,12 +143,12 @@ class BaseSampler(ABC):
         max_num_tokens: int,
         model_kwargs: dict,
         return_logits: bool = False,
-    ):
+    ) -> SamplingOutput:
         """Compute the probability of any of terms appearing in any position."""
         raise NotImplementedError
 
     @abstractmethod
-    def estimate_hit_probability(self, *args, **kwargs):
+    def estimate_hit_probability(self, *args, **kwargs) -> SamplingOutput:
         """Estimates the hitting time probabilities of any of the terms.
 
         Notes
@@ -164,7 +162,7 @@ class BaseSampler(ABC):
     @abstractmethod
     def estimate_hit_probability_A_before_B(
         self, terms_A: str, terms_B: str, history: Optional[str] = None, *args, **kwargs
-    ):
+    ) -> SamplingOutput:
         """Estimates the probability that any term in terms_A occurs before
         any of the terms in B when conditioned on the history.
 
@@ -174,9 +172,9 @@ class BaseSampler(ABC):
         """
         raise NotImplemented
 
-    def batch_estimate(
+    def _batch_estimate(
         self, fn: callable, num_sequences: int, seed: int, batch_size=32, **kwargs
-    ):
+    ) -> SamplingOutput:
         assert num_sequences >= batch_size, "'num_sequences' < 'batch_size"
         set_seed(seed)
 
@@ -186,13 +184,51 @@ class BaseSampler(ABC):
         # A priori compute seeds to avoid biased seed creation
         batch_seeds = torch.randint(0, 10**6, (n_iters,))
 
-        results = []
+        results = None
         for i, seq_no in tqdm(enumerate(range(0, num_sequences, batch_size))):
             batch_seq_size = min(batch_size, num_sequences - seq_no)
             res = fn(seed=batch_seeds[i], num_sequences=batch_seq_size, **kwargs)
-            results.append(res)
+            results += res
 
         return results
+
+    def batch_estimate_marginals(
+        self,
+        input_str: str,
+        terms: str,
+        num_sequences: int,
+        max_num_tokens: int,
+        seed: int,
+        add_special_tokens: bool = False,
+    ) -> SamplingOutput:
+        return self._batch_estimate(
+            self.estimate_marginals,
+            input_str=input_str,
+            terms=terms,
+            num_sequences=num_sequences,
+            max_num_tokens=max_num_tokens,
+            seed=seed,
+            add_special_tokens=add_special_tokens,
+        )
+
+    def batch_estimate_not_occurring(
+        self,
+        input_str: str,
+        avoid_terms: str,
+        num_sequences: int,
+        max_num_tokens: int,
+        seed: int,
+        add_special_tokens: bool = False,
+    ) -> SamplingOutput:
+        return self._batch_estimate(
+            self.estimate_not_occurring,
+            input_str=input_str,
+            terms=avoid_terms,
+            num_sequences=num_sequences,
+            max_num_tokens=max_num_tokens,
+            add_special_tokens=add_special_tokens,
+            seed=seed,
+        )
 
     def estimate_marginals(
         self,
@@ -202,7 +238,7 @@ class BaseSampler(ABC):
         max_num_tokens: int,
         seed: int,
         add_special_tokens: bool = False,
-    ):
+    ) -> SamplingOutput:
         """Estimates the probability that any of the terms occurs in any of
         the positions. That is, what's the probability of randomly selecting
         a token from our model distribution and picking one of the specified
@@ -226,7 +262,7 @@ class BaseSampler(ABC):
         max_num_tokens: int,
         seed: int,
         add_special_tokens: bool = False,
-    ):
+    ) -> SamplingOutput:
         """Estimates the probability of avoid_terms not occurring in the
         next max_num_tokens.
 
