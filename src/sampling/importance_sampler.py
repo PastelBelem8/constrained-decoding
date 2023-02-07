@@ -78,6 +78,7 @@ class ImportanceSampler(BaseSampler):
         )
 
         all_logits = []
+        prob_not_occur_before_i = []
         for i in tqdm(range(max_num_tokens)):
             model_inputs = self.model.prepare_inputs_for_generation(
                 samples, **model_kwargs
@@ -152,6 +153,7 @@ class ImportanceSampler(BaseSampler):
             # model_kwargs. This avoid having to feed in the whole decoding
             # sequence at generation (thus making it faster).
             # ---------------------------------------------------------------------
+            prob_not_occur_before_i.append(torch.exp(intermediate_model_log_prob))
             if return_logits:
                 all_logits.append(F.log_softmax(logits, dim=-1))
 
@@ -166,9 +168,10 @@ class ImportanceSampler(BaseSampler):
         # 5. Compute probability of number of times element in C do not occur
         # -------------------------------------------------------------------------
         return SamplingOutput(
-            probs=torch.exp(intermediate_model_log_prob),
+            probs=prob_not_occur_before_i,
             samples=samples,
             logits=all_logits,
+            terms_ids=avoid_terms_ids,
             desc="ImportanceSampler._sample_not_occur",
         )
 
@@ -266,49 +269,72 @@ class ImportanceSampler(BaseSampler):
         return SamplingOutput(
             probs=marginals_prob,
             samples=samples,
-            desc="ImportanceSampler._sample_marginal",
+            terms_ids=terms_ids,
             logits=all_logits,
+            desc="ImportanceSampler._sample_marginal",
         )
 
-    def estimate_hit_probability(self, *args, **kwargs):
-        """$P(\pi(K) = a) = P(X_K = a, X_{<K} \neq a) = P(X_K = a| X_{<K} \neq a) P(X_{<K} \neq a)$"""
-        if self.model_prob_occur == []:
-            print(args, kwargs)
-            if args or kwargs:
-                self.estimate(*args, **kwargs)
-            else:
-                raise ValueError(
-                    "Could not estimate marginals."
-                    'Please call "ImportanceSampling.estimate" first.'
-                )
+    def estimate_hit_probability(self, sampling_out: SamplingOutput = None):
+        """Use importance sampling to estimate the hitting probability of
+        terms.
 
+        The hitting time probability concerns the probability of the first
+        occurrence of any of the terms being at decoding step k.
+        Mathematically, we can think of it as $P(\pi(A) = k)$ and with
+        $k \in {1, ..., K}$. In other words:
+
+        $P(\pi(A) = k) = P(X_k = A, X_{<k} \not\in A) = P(X_k \in A| X_{<k} \not\in A) P(X_{<k} \not\in A)$
+
+        To compute the probability of the hitting time being at any step in
+        1, ..., K. We will make use of the following factorization:
+
+        $P(\pi(A) = K) = $
+        $ = P(\pi(A) = K | A \not\in X_{1:K-1})$
+        $ = P(X_n \in A | A \not\in X_{K-1}) \prod_{i}^{K-1} P(X_i \not\in A | X_{<i} \not\in A)$
+
+        To compute the quantity above, we will adopt an Importance Sampling
+        approach:
+
+        Pseudo-Algorithm
+        ----------------
+        # 1. Sample sequences X_{1:K} that respect A \not\in X_{1:K-1} and A \in X_K.
+        # 1.1. When sampling X_i after X_{1:i-1}:
+        #     1. Use proposal distribution q(X_i = x | X_{1:i-1}) =
+        #         1[x \not\in A] * p(X_i = x | X_{1:i-1})
+        #     2. Randomly sample X_i from q(X_i = x | X_{1:i-1}).
+        # 2. For each sequence X_{1:K}^{(j)} for j in 1,..., M
+        # 2.1. Compute h_j = p(X_i^{(j)} \in A | A \not\in X_{1:i-1}^{(j)}) \prod_{i=1}^{k-1} p(X_i \not\in A | X_{1:i-1}^{(j)})
+        """
         # --------------------------------------------------------------
-        # Assumption: the intermediate artifacts have been stored
+        # Assumption: not_occur probability has been previously run
         # --------------------------------------------------------------
-        num_tokens = len(self.model_prob_occur)
+        assert sampling_out.description == "ImportanceSampler._sample_not_occur"
+        assert sampling_out.logits != [], "Cannot compute hitting time probability without logits"
+
+        num_tokens = len(self.probs)
+
         # hit_probs: hitting time probability, i.e., the probability
         # that the first time any of the terms appears is at timestep i
         hit_probs = []
-        # miss_probs: cmf of misses, i.e., the probability that neither
-        # of these terms occurs before timestep i
-        miss_probs = []
 
-        for i in tqdm(range(num_tokens)):
-            prob_occur = self.model_prob_occur[i]
+        for i in tqdm(range(0, num_tokens)):
+            # Hitting time probability at i:
+            hit_prob = F.softmax(sampling_out.logits[i], dim=-1)
+            hit_prob = hit_prob[..., sampling_out.terms_ids].sum(dim=-1).unsqueeze(-1)
 
-            if miss_probs == []:
-                miss_probs.append(1 - prob_occur)
+            if i == 0:
+                hit_probs.append(hit_prob)
             else:
-                miss_probs.append(miss_probs[-1] * (1 - prob_occur))
+                prob_no_hit_before_i = sampling_out.probs[i-1]
+                hit_probs.append(hit_prob * prob_no_hit_before_i)
 
-            if len(miss_probs) > 1:
-                # Probability of terms not occurring before timestep i
-                # and occurring exactly on timestep i
-                prob_occur *= miss_probs[-1]
-
-            hit_probs.append(prob_occur.mean().item())
-
-        return hit_probs, miss_probs
+        return SamplingOutput(
+            probs=hit_probs,
+            samples=sampling_out.samples,
+            logits=[],
+            desc="ImportanceSampler.estimate_hit_probability",
+            terms_ids=sampling_out.terms_ids,
+        )
 
     def estimate_hit_probability_A_before_B(
         self,
