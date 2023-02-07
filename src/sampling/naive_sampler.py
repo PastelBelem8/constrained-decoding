@@ -110,17 +110,35 @@ class NaiveSampler(BaseSampler):
             probs=probs_per_decoding_step,
             samples=samples[:, history_length:],
             terms_ids=avoid_terms_ids,
-             desc="NaiveSampler._sample_not_occur",
+            desc="NaiveSampler._sample_not_occur",
             logits=all_logits,
         )
 
     def _sample_marginal(self, sampling_out: SamplingOutput) -> SamplingOutput:
-        samples = sampling_out.samples
+        assert sampling_out.description == "NaiveSampler._sample_not_occur"
+        assert len(sampling_out.probs) == sampling_out.samples.shape[1]
 
-        counts =
-        batch_size, num_tokens = samples.shape
+        num_tokens = len(sampling_out.probs)
 
-        for i in range(num_tokens):
+        samples_term_mask = torch.isin(
+            sampling_out.samples[:,i],
+            test_elements=sampling_out.terms_ids,
+        )
+
+        marginals = [
+            samples_term_mask[:, i].any(dim=-1)
+            for i in range(num_tokens)
+        ]
+
+        return SamplingOutput(
+            probs=marginals,
+            samples=sampling_out.samples,
+            terms_ids=sampling_out.terms_ids,
+            desc=sampling_out.description,
+            logits=sampling_out.logits,
+        )
+
+
 
     def estimate_hit_probability(self):
         raise NotImplementedError
