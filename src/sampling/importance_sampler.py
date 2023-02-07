@@ -311,13 +311,10 @@ class ImportanceSampler(BaseSampler):
         assert sampling_out.description == "ImportanceSampler._sample_not_occur"
         assert sampling_out.logits != [], "Cannot compute hitting time probability without logits"
 
-        num_tokens = len(self.probs)
-
         # hit_probs: hitting time probability, i.e., the probability
         # that the first time any of the terms appears is at timestep i
         hit_probs = []
-
-        for i in tqdm(range(0, num_tokens)):
+        for i in tqdm(range(0, len(self.probs))):
             # Hitting time probability at i:
             hit_prob = F.softmax(sampling_out.logits[i], dim=-1)
             hit_prob = hit_prob[..., sampling_out.terms_ids].sum(dim=-1).unsqueeze(-1)
