@@ -1,4 +1,5 @@
 from tqdm import tqdm
+from sampling.data_objects import SamplingOutput
 from sampling.base import BaseSampler
 
 import numpy as np
@@ -63,7 +64,7 @@ class ImportanceSampler(BaseSampler):
         max_num_tokens,
         model_kwargs,
         return_logits=False,
-    ):
+    ) -> SamplingOutput:
         input_ids = input_ids.to(self.device)
         avoid_terms_ids = avoid_terms_ids.to(self.device)
         model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
@@ -105,7 +106,7 @@ class ImportanceSampler(BaseSampler):
             # ---------------------------------------------------------------------
             # 3. Accumulate log_probabilities
             # ---------------------------------------------------------------------
-            proposal_log_prob = torch.gather(proposal, dim=-1, index=next_tokens)
+            # proposal_log_prob = torch.gather(proposal, dim=-1, index=next_tokens)
             model_prob = F.softmax(logits, dim=-1)
             model_prob = 1 - model_prob[..., avoid_terms_ids].sum(dim=-1).unsqueeze(-1)
             # ^Note: model_log_prob contains the probability that none of the
@@ -164,9 +165,14 @@ class ImportanceSampler(BaseSampler):
         # -------------------------------------------------------------------------
         # 5. Compute probability of number of times element in C do not occur
         # -------------------------------------------------------------------------
-        return torch.exp(intermediate_model_log_prob), samples
+        return SamplingOutput(
+            probs=torch.exp(intermediate_model_log_prob),
+            samples=samples,
+            logits=all_logits,
+            desc="ImportanceSampler._sample_not_occur",
+        )
 
-    def _sample_marginal(self, input_ids, terms_ids, max_num_tokens, model_kwargs):
+    def _sample_marginal(self, input_ids, terms_ids, max_num_tokens, model_kwargs, return_logits=False) -> SamplingOutput:
         input_ids = input_ids.to(self.device)
         terms_ids = terms_ids.to(self.device)
         model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
@@ -179,7 +185,7 @@ class ImportanceSampler(BaseSampler):
             self.device
         )
 
-        marginals_prob = []
+        all_logits, marginals_prob = [], []
         for i in tqdm(range(max_num_tokens)):
             model_inputs = self.model.prepare_inputs_for_generation(
                 samples, **model_kwargs
@@ -244,6 +250,9 @@ class ImportanceSampler(BaseSampler):
                 is_encoder_decoder=self.model.config.is_encoder_decoder,
             )
 
+            if return_logits:
+                all_logits.append(F.log_softmax(logits, dim=-1))
+
             # If all sequences are finished (unfinished==0), don't keep generating
             if (unfinished_sequences == 0).all():
                 print("=========================================================")
@@ -254,7 +263,12 @@ class ImportanceSampler(BaseSampler):
         # -------------------------------------------------------------------------
         # 5. Compute probability of number of times element in C do not occur
         # -------------------------------------------------------------------------
-        return marginals_prob, samples
+        return SamplingOutput(
+            probs=marginals_prob,
+            samples=samples,
+            desc="ImportanceSampler._sample_marginal",
+            logits=all_logits,
+        )
 
     def estimate_hit_probability(self, *args, **kwargs):
         """$P(\pi(K) = a) = P(X_K = a, X_{<K} \neq a) = P(X_K = a| X_{<K} \neq a) P(X_{<K} \neq a)$"""
