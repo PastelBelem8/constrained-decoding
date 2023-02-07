@@ -1,4 +1,5 @@
 from tqdm import tqdm
+from sampling.data_objects import SamplingOutput
 from sampling.base import BaseSampler
 
 import torch
@@ -80,7 +81,6 @@ class NaiveSampler(BaseSampler):
             # in model_kwargs. This avoid having to feed in the whole decoding
             # sequence at generation (thus making it faster).
             # ---------------------------------------------------------------------
-
             if return_logits:
                 all_logits.append(F.log_softmax(logits, dim=-1))
 
@@ -95,13 +95,32 @@ class NaiveSampler(BaseSampler):
         samples_with_avoid_terms = torch.isin(
             samples[:, history_length:],
             test_elements=avoid_terms_ids,
-            assume_unique=True,
         )
+
         # ^Note: samples[:, history_length:] aims to avoid counting tokens in the
         # prefix/history for models that require feeding the history as input.
+        samples_with_avoid_terms = torch.cumsum(samples_with_avoid_terms, dim=-1)
 
-        samples_with_avoid_terms = samples_with_avoid_terms.any(dim=-1)
-        return 1.0 - samples_with_avoid_terms.float(), samples
+        probs_per_decoding_step = [
+            1 - (samples_with_avoid_terms[:,:i].any(dim=-1))
+            for i in range(max_num_tokens)
+        ]
+
+        return SamplingOutput(
+            probs=probs_per_decoding_step,
+            samples=samples[:, history_length:],
+            terms_ids=avoid_terms_ids,
+             desc="NaiveSampler._sample_not_occur",
+            logits=all_logits,
+        )
+
+    def _sample_marginal(self, sampling_out: SamplingOutput) -> SamplingOutput:
+        samples = sampling_out.samples
+
+        counts =
+        batch_size, num_tokens = samples.shape
+
+        for i in range(num_tokens):
 
     def estimate_hit_probability(self):
         raise NotImplementedError
