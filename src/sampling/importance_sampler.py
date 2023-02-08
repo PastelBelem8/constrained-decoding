@@ -60,13 +60,13 @@ class ImportanceSampler(BaseSampler):
     def _sample_not_occur(
         self,
         input_ids,
-        avoid_terms_ids,
+        terms_ids,
         max_num_tokens,
         model_kwargs,
         return_logits=False,
     ) -> SamplingOutput:
         input_ids = input_ids.to(self.device)
-        avoid_terms_ids = avoid_terms_ids.to(self.device)
+        terms_ids = terms_ids.to(self.device)
         model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
 
         n_samples, samples = input_ids.shape[0], input_ids.clone()
@@ -93,7 +93,7 @@ class ImportanceSampler(BaseSampler):
             # 1. Create proposal distribution
             # ---------------------------------------------------------------------
             proposal = logits.clone()
-            proposal[..., avoid_terms_ids] = -np.inf
+            proposal[..., terms_ids] = -np.inf
 
             # ---------------------------------------------------------------------
             # 2. Sample next token based on proposal distribution
@@ -109,9 +109,9 @@ class ImportanceSampler(BaseSampler):
             # ---------------------------------------------------------------------
             # proposal_log_prob = torch.gather(proposal, dim=-1, index=next_tokens)
             model_prob = F.softmax(logits, dim=-1)
-            model_prob = 1 - model_prob[..., avoid_terms_ids].sum(dim=-1).unsqueeze(-1)
+            model_prob = 1 - model_prob[..., terms_ids].sum(dim=-1).unsqueeze(-1)
             # ^Note: model_log_prob contains the probability that none of the
-            # avoid_terms_ids occurs...
+            # terms_ids occurs...
 
             # ---------------------------------------------------------------------
             # 4. Handle EOS sequences:
@@ -171,7 +171,7 @@ class ImportanceSampler(BaseSampler):
             probs=prob_not_occur_before_i,
             samples=samples,
             logits=all_logits,
-            terms_ids=avoid_terms_ids,
+            terms_ids=terms_ids,
             desc="ImportanceSampler._sample_not_occur",
         )
 

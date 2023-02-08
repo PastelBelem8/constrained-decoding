@@ -65,6 +65,7 @@ class BaseSampler(ABC):
         max_num_tokens: int,
         seed: int,
         add_special_tokens: bool = False,
+        **kwargs,
     ) -> SamplingOutput:
         """Estimates the probability that any of the terms occurs in any of
         the positions. That is, what's the probability of randomly selecting
@@ -100,6 +101,7 @@ class BaseSampler(ABC):
             terms_ids=terms_ids,
             max_num_tokens=max_num_tokens,
             **sampling_specific_kwargs,
+            **kwargs,
         )
 
         return results
@@ -108,7 +110,7 @@ class BaseSampler(ABC):
     def _sample_not_occur(
         self,
         input_ids: Tensor,
-        avoid_terms_ids: Tensor,
+        terms_ids: Tensor,
         max_num_tokens: int,
         model,
         tokenizer,
@@ -116,7 +118,7 @@ class BaseSampler(ABC):
         return_logits: bool = False,
     ) -> SamplingOutput:
         """Class-specific sampling procedure that estimates the probability of the
-        specified avoid_terms_ids not occurring in any position up to max_num_tokens.
+        specified terms_ids not occurring in any position up to max_num_tokens.
 
         Notes
         -----
@@ -188,7 +190,7 @@ class BaseSampler(ABC):
         for i, seq_no in tqdm(enumerate(range(0, num_sequences, batch_size))):
             batch_seq_size = min(batch_size, num_sequences - seq_no)
             res = fn(seed=batch_seeds[i], num_sequences=batch_seq_size, **kwargs)
-            results += res
+            results = res if results is None else res + results
 
         return results
 
@@ -200,6 +202,7 @@ class BaseSampler(ABC):
         max_num_tokens: int,
         seed: int,
         add_special_tokens: bool = False,
+        **kwargs,
     ) -> SamplingOutput:
         return self._batch_estimate(
             self.estimate_marginals,
@@ -209,6 +212,7 @@ class BaseSampler(ABC):
             max_num_tokens=max_num_tokens,
             seed=seed,
             add_special_tokens=add_special_tokens,
+            **kwargs,
         )
 
     def batch_estimate_not_occurring(
@@ -219,6 +223,7 @@ class BaseSampler(ABC):
         max_num_tokens: int,
         seed: int,
         add_special_tokens: bool = False,
+        **kwargs,
     ) -> SamplingOutput:
         return self._batch_estimate(
             self.estimate_not_occurring,
@@ -228,6 +233,7 @@ class BaseSampler(ABC):
             max_num_tokens=max_num_tokens,
             add_special_tokens=add_special_tokens,
             seed=seed,
+            **kwargs,
         )
 
     def estimate_marginals(
@@ -257,13 +263,14 @@ class BaseSampler(ABC):
     def estimate_not_occurring(
         self,
         input_str: str,
-        avoid_terms: str,
+        terms: str,
         num_sequences: int,
         max_num_tokens: int,
         seed: int,
         add_special_tokens: bool = False,
+        **kwargs,
     ) -> SamplingOutput:
-        """Estimates the probability of avoid_terms not occurring in the
+        """Estimates the probability of terms not occurring in the
         next max_num_tokens.
 
         Notes
@@ -274,11 +281,12 @@ class BaseSampler(ABC):
         return self._estimate_base(
             self._sample_not_occur,
             input_str=input_str,
-            terms=avoid_terms,
+            terms=terms,
             num_sequences=num_sequences,
             max_num_tokens=max_num_tokens,
             add_special_tokens=add_special_tokens,
             seed=seed,
+            **kwargs,
         )
 
     def compute_confidence_intervals(

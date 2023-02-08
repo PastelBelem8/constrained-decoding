@@ -107,9 +107,11 @@ def compute_ngrams(args, n: int=2, slice: int=300):
     print(len(frequencies))
 
     filename = args.file.rpartition("/")[-1]
-    with open(f"{args.output_dir}/{filename}_all_subsets_{n}-counts.pkl", "wb") as f:
+    filepath = f"{args.output_dir}/{filename}_all_subsets_{n}-counts.pkl"
+    with open(filepath, "wb") as f:
         joblib.dump(frequencies, f)
 
+    print("Done! Counts can be found at", filepath)
 
 def create_parser():
     parser = argparse.ArgumentParser()

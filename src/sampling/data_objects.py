@@ -34,6 +34,6 @@ class SamplingOutput:
             probs=new_probs,
             samples=new_samples,
             terms_ids=self.terms_ids,
-            desc=self.desc,
+            desc=self.description,
             logits=new_logits,
         )
