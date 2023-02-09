@@ -12,13 +12,13 @@ class NaiveSampler(BaseSampler):
     def _sample_not_occur(
         self,
         input_ids,
-        avoid_terms_ids,
+        terms_ids,
         max_num_tokens,
         model_kwargs,
         return_logits=False,
     ):
         input_ids = input_ids.to(self.device)
-        avoid_terms_ids = avoid_terms_ids.to(self.device)
+        terms_ids = terms_ids.to(self.device)
         model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
 
         n_samples, history_length = input_ids.shape
@@ -28,7 +28,7 @@ class NaiveSampler(BaseSampler):
         )
 
         all_logits = []
-        for i in tqdm(range(max_num_tokens)):
+        for i in range(max_num_tokens):
             model_inputs = self.model.prepare_inputs_for_generation(
                 samples, **model_kwargs, device=self.device
             )
@@ -82,7 +82,7 @@ class NaiveSampler(BaseSampler):
             # sequence at generation (thus making it faster).
             # ---------------------------------------------------------------------
             if return_logits:
-                all_logits.append(F.log_softmax(logits, dim=-1))
+                all_logits.append(F.log_softmax(logits, dim=-1).cpu().detach().numpy())
 
             # Stop whenever all sequences are finished (unfinished==0)
             if (unfinished_sequences == 0).all():
@@ -94,22 +94,24 @@ class NaiveSampler(BaseSampler):
         # -------------------------------------------------------------------------
         samples_with_avoid_terms = torch.isin(
             samples[:, history_length:],
-            test_elements=avoid_terms_ids,
+            test_elements=terms_ids,
         )
 
         # ^Note: samples[:, history_length:] aims to avoid counting tokens in the
         # prefix/history for models that require feeding the history as input.
-        samples_with_avoid_terms = torch.cumsum(samples_with_avoid_terms, dim=-1)
+        samples_with_avoid_terms = torch\
+            .cumsum(samples_with_avoid_terms, dim=-1)\
+            .cpu().detach().numpy()
 
         probs_per_decoding_step = [
-            1 - (samples_with_avoid_terms[:,:i].any(dim=-1))
+            1 - (samples_with_avoid_terms[:,:i].any(axis=1)).reshape(-1, 1)
             for i in range(max_num_tokens)
         ]
 
         return SamplingOutput(
             probs=probs_per_decoding_step,
-            samples=samples[:, history_length:],
-            terms_ids=avoid_terms_ids,
+            samples=samples[:, history_length:].cpu().detach().numpy(),
+            terms_ids=terms_ids.cpu().detach().numpy(),
             desc="NaiveSampler._sample_not_occur",
             logits=all_logits,
         )
@@ -157,3 +159,6 @@ class NaiveSampler(BaseSampler):
             desc="NaiveSampler.estimate_hit_probability",
             logits=sampling_out.logits,
         )
+
+    def estimate_hit_probability_A_before_B(*args, **kwargs):
+        raise NotImplemented
