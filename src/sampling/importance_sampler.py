@@ -69,7 +69,8 @@ class ImportanceSampler(BaseSampler):
         terms_ids = terms_ids.to(self.device)
         model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
 
-        n_samples, samples = input_ids.shape[0], input_ids.clone()
+        n_samples, history_len = input_ids.shape
+        samples = input_ids.clone()
         intermediate_model_log_prob = torch.zeros(
             (n_samples, 1), dtype=torch.float32
         ).to(self.device)
@@ -79,7 +80,7 @@ class ImportanceSampler(BaseSampler):
 
         all_logits = []
         prob_not_occur_before_i = []
-        for i in tqdm(range(max_num_tokens)):
+        for i in range(max_num_tokens):
             model_inputs = self.model.prepare_inputs_for_generation(
                 samples, **model_kwargs
             )
@@ -153,9 +154,10 @@ class ImportanceSampler(BaseSampler):
             # model_kwargs. This avoid having to feed in the whole decoding
             # sequence at generation (thus making it faster).
             # ---------------------------------------------------------------------
-            prob_not_occur_before_i.append(torch.exp(intermediate_model_log_prob))
+            prob_not_occur_before_i.append(torch.exp(intermediate_model_log_prob).cpu().detach().numpy())
+
             if return_logits:
-                all_logits.append(F.log_softmax(logits, dim=-1))
+                all_logits.append(F.log_softmax(logits, dim=-1).cpu().detach().numpy())
 
             # If all sequences are finished (unfinished==0), don't keep generating
             if (unfinished_sequences == 0).all():
@@ -169,9 +171,9 @@ class ImportanceSampler(BaseSampler):
         # -------------------------------------------------------------------------
         return SamplingOutput(
             probs=prob_not_occur_before_i,
-            samples=samples,
+            samples=samples[:,history_len:].cpu().detach().numpy(),
             logits=all_logits,
-            terms_ids=terms_ids,
+            terms_ids=terms_ids.cpu().detach().numpy(),
             desc="ImportanceSampler._sample_not_occur",
         )
 
@@ -180,7 +182,8 @@ class ImportanceSampler(BaseSampler):
         terms_ids = terms_ids.to(self.device)
         model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
 
-        n_samples, samples = input_ids.shape[0], input_ids.clone()
+        n_samples, history_len = input_ids.shape
+        samples = input_ids.clone()
         intermediate_model_log_prob = torch.zeros(
             (n_samples, 1), dtype=torch.float32
         ).to(self.device)
@@ -189,7 +192,7 @@ class ImportanceSampler(BaseSampler):
         )
 
         all_logits, marginals_prob = [], []
-        for i in tqdm(range(max_num_tokens)):
+        for i in range(max_num_tokens):
             model_inputs = self.model.prepare_inputs_for_generation(
                 samples, **model_kwargs
             )
@@ -219,7 +222,7 @@ class ImportanceSampler(BaseSampler):
             )
 
             # model_prob contains the probability of the current tokens
-            model_prob = torch.gather(F.softmax(logits), dim=-1, index=next_tokens)
+            model_prob = torch.gather(F.softmax(logits, dim=-1), dim=-1, index=next_tokens)
 
             # ---------------------------------------------------------------------
             # 3. Handle EOS sequences:
@@ -268,7 +271,7 @@ class ImportanceSampler(BaseSampler):
         # -------------------------------------------------------------------------
         return SamplingOutput(
             probs=marginals_prob,
-            samples=samples,
+            samples=samples[:,history_len:],
             terms_ids=terms_ids,
             logits=all_logits,
             desc="ImportanceSampler._sample_marginal",
