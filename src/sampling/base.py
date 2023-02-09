@@ -6,7 +6,7 @@ from typing import List, Optional
 from tqdm import tqdm
 
 import math
-import torch
+import torch, torch.nn
 import sampling.utils_models as utils_models
 
 # Type alias
@@ -244,6 +244,7 @@ class BaseSampler(ABC):
         max_num_tokens: int,
         seed: int,
         add_special_tokens: bool = False,
+        **kwargs,
     ) -> SamplingOutput:
         """Estimates the probability that any of the terms occurs in any of
         the positions. That is, what's the probability of randomly selecting
@@ -258,6 +259,7 @@ class BaseSampler(ABC):
             max_num_tokens=max_num_tokens,
             seed=seed,
             add_special_tokens=add_special_tokens,
+            **kwargs
         )
 
     def estimate_not_occurring(
@@ -326,6 +328,51 @@ class BaseSampler(ABC):
             clean_up_tokenization_spaces=clean_up_tokenization_spaces,
             *kwargs,
         )
+
+    """
+    def score(self, targets, inputs=None, add_special_tokens=False):
+        bos_token_id = (
+            self.tokenizer.bos_token_id or self.model.config.decoder_start_token_id
+        )
+
+        input_ids = (
+            self.tokenizer(
+                inputs, return_tensors="pt", add_special_tokens=add_special_tokens
+            ).input_ids
+            if inputs is not None
+            else None
+        )
+
+        history = create_history(len(targets), input_ids, bos_token_id)
+        forward_specific_kwargs = create_model_kwargs(
+            history, self.model, self.tokenizer
+        )
+
+        targets_ids = self.tokenizer.batch_encode_plus(
+            targets, add_special_tokens=False, padding="longest", return_tensors="pt",
+        ).input_ids
+
+        input_ids = forward_specific_kwargs.pop("input_ids").to(self.device)
+        model_kwargs = {k: v.to(self.device) for k, v in forward_specific_kwargs.items()}
+
+        model_inputs = self.model.prepare_inputs_for_generation(input_ids, **model_kwargs)
+        model_outputs = self.model.forward(**model_inputs, labels=targets_ids)
+
+        # Following the code in https://github.com/neulab/BARTScore/blob/main/WMT/bart_score.py
+        # We will try to get the scores associated with specific sentences
+        loss_fct = torch.nn.NLLLoss(reduction="none", ignore_index=self.tokenizer.config.pad_token_id)
+        lsm = torch.nn.LogSoftmax(dim=1) # first applies the softmax to ensure all values are
+
+        logits = model_outputs.logits.view(-1, self.tokenizer.vocab_size)
+        lsm_logits = lsm(logits)
+        loss = loss_fct(lsm_logits, targets_ids.view(-1))
+        loss = loss.view(targets_ids.shape[0], -1)
+        loss = torch.exp(-1 * loss)
+
+        score_list = [x.item() for x in loss.squeeze(dim=0)]
+
+        return score_list
+    """
 
     def to_device(self, *args, **kwargs):
         # https://stackoverflow.com/questions/59560043/what-is-the-difference-between-model-todevice-and-model-model-todevice
