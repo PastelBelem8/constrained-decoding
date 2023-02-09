@@ -21,8 +21,10 @@ def load_model(model_name, tokenizer_kwargs=None, model_kwargs=None):
     tokenizer = tokenizer_class.from_pretrained(model_name, **default_tokenizer_kwargs)
 
     pad_token = (
-        tokenizer.eos_token_id if tokenizer.pad_token is None else tokenizer.pad_token
+        tokenizer.eos_token_id if tokenizer.pad_token_id is None else tokenizer.pad_token_id
     )
+    tokenizer.pad_token_id = pad_token
+
     model = model_class.from_pretrained(
         model_name, pad_token_id=pad_token, **model_kwargs
     )
@@ -31,6 +33,7 @@ def load_model(model_name, tokenizer_kwargs=None, model_kwargs=None):
     print(" ->", tokenizer_class)
     print(" ->", model_class)
     print("Vocabulary size:", tokenizer.vocab_size)
+    print("Pad token id:", tokenizer.pad_token_id)
     return tokenizer, model
 
 
