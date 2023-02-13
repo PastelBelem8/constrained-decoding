@@ -76,8 +76,8 @@ def compute_ngrams_by_subset(args, n: int=2, slice: int=300):
             for tokens in batch_tokens:
                 compute_frequencies(frequencies[subset], tokens, n=n)
 
-            if num_file % 100_000 == 0:
-                print(f"Processed {num_file}")
+            if num_file % 1_000_000 == 0:
+                print(f"{args.file} Computed {n}-grams in {num_file} documents")
 
     print(len(frequencies))
 
@@ -101,13 +101,15 @@ def compute_ngrams(args, n: int=2, slice: int=300):
         for tokens in batch_tokens:
             compute_frequencies(frequencies, tokens, n=n)
 
-        if num_file % 100_000 == 0:
-            print(f"Processed {num_file}")
+        if num_file % 1_000_000 == 0:
+            print(f"{args.file}: Computed {n}-grams in {num_file} documents")
 
-    print(len(frequencies))
+    print(args.file, len(frequencies))
 
     filename = args.file.rpartition("/")[-1]
     filepath = f"{args.output_dir}/{filename}_all_subsets_{n}-counts.pkl"
+
+    print("About to dump counts into", filepath)
     with open(filepath, "wb") as f:
         joblib.dump(frequencies, f)
 
