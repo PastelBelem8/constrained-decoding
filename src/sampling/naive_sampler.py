@@ -92,21 +92,57 @@ class NaiveSampler(BaseSampler):
         # -------------------------------------------------------------------------
         # 5. Compute probability of number of times element in C do not occur
         # -------------------------------------------------------------------------
+        # prob_of_not_occurring at timestep k, implies that it shouldn't have
+        # occurred <= timestep k.
+        #
+        # Mathematically, this means that
+        #       P(N_c(K) = 0) = 1/N sum_{i=1..N} 1[ \cap_{j=1,...,K} S_ij=0]
+        #
+        # , where 1[] is the kronecker delta (or indicator function), which is one
+        # only when the condition inside is true.
+        #
+        # PseudoAlgorithmm
+        # -----------------------
+        # Inputs:
+        # - S: num_sequences x max_num_tokens sample matrix S, where S_ij = 1
+        # if sampled sequence i has one of the tokens in avoid_terms at position j,
+        # and S_ij = 0 otherwise.
+        # - C: set of terms to avoid.
+        #
+        # Outputs:
+        # - probs: list of size max_num_tokens with the probabilities of neither
+        # of the terms occurring at timestep k=1, ..., max_num_tokens
+        # -------------------------------------------------------------------------
+
+        # Determine which of the sequences contain any of the terms in "avoid_terms"
         samples_with_avoid_terms = torch.isin(
             samples[:, history_length:],
             test_elements=terms_ids,
         )
-
         # ^Note: samples[:, history_length:] aims to avoid counting tokens in the
         # prefix/history for models that require feeding the history as input.
+
+        # Since the probability at timestep K requires that a term in avoid_terms
+        # never occurred before, we will accumulate in the matrix that information
+        # by stating whether any of the terms has occurred before timestep K.
+        # (we use cummax for it, since the matrix is bound between 0s and 1s).
         samples_with_avoid_terms = torch\
-            .cumsum(samples_with_avoid_terms, dim=-1)\
+            .cummax(samples_with_avoid_terms, dim=-1)[0]\
             .cpu().detach().numpy()
 
+        # At timestep k, S_ij = 0 if none of the terms has occurred before or at
+        # timestep k and it S_ij = 1 if one of the terms has occurred at least once
+        # before.
+        # Since we're interested in the probability of never occurring, we will
+        # count the number of sequences that have no occurrence of terms up until
+        # position k.
         probs_per_decoding_step = [
-            1 - (samples_with_avoid_terms[:,:i].any(axis=1)).reshape(-1, 1)
-            for i in range(max_num_tokens)
+            (samples_with_avoid_terms[:,k] == 0)
+            for k in range(max_num_tokens)
         ]
+
+        # Self check
+        assert sum([sum(p) for p in probs_per_decoding_step]) == n_samples, f"{[sum(p) for p in probs_per_decoding_step]} vs n_samples={n_samples}"
 
         return SamplingOutput(
             probs=probs_per_decoding_step,
@@ -120,16 +156,19 @@ class NaiveSampler(BaseSampler):
         assert sampling_out.description == "NaiveSampler._sample_not_occur"
         assert len(sampling_out.probs) == sampling_out.samples.shape[1]
 
+        # Marginal probability concerns the likelihood of choosing a term
+        # at random from decoding step k and the term belonging to set C.
+
+        # We can re-use samples from before to compute this
         samples_term_mask = np.isin(
             sampling_out.samples,
             test_elements=sampling_out.terms_ids,
         )
-
         num_tokens = len(sampling_out.probs)
-        marginals = [
-            samples_term_mask[:, i].any(axis=1) #TODO: AxisError: axis 1 is out of bounds for array of dimension 1
-            for i in range(num_tokens)
-        ]
+
+        # For each decoding step k, if any of the terms in C
+        # occurs, then mark it has 1
+        marginals = [samples_term_mask[:, k] for k in range(num_tokens)]
 
         return SamplingOutput(
             probs=marginals,
@@ -143,13 +182,29 @@ class NaiveSampler(BaseSampler):
         assert sampling_out.description == "NaiveSampler._sample_not_occur"
         assert len(sampling_out.probs) == sampling_out.samples.shape[1]
 
-        samples_mask = torch.isin(
-            sampling_out.samples, test_elements=sampling_out.terms_ids,
-        )
-        samples_mask = torch.cumsum(samples_mask, dim=-1)
+        samples_mask = np.isin(sampling_out.samples, test_elements=sampling_out.terms_ids)
+        # Unlike torch, numpy has no cummax method, therefore we replace that
+        # with the application of cumsum and then masking the output as whether
+        # any of the elements happens 1 or more times, thus achieving the same
+        # behavior as the torch.cummax
+        samples_mask = samples_mask.cumsum(axis=1)
+        samples_mask = (samples_mask >= 1)
 
+        # Hit probabilities at timestep k refer to the probability of
+        # not observing any of the elements in C before decoding step k
+        # and observing them exactly at decoding step k.
+        #
+        # samples_mask matrix indicates the moment in which any of the
+        # terms in terms_ids occur.
         hit_probs = [samples_mask[:, i]]
         for i in range(1, len(sampling_out.probs)):
+            # Computing the hit probability implies that for columns before k
+            # should be 0's and they become 1 at timestep k. Hence, since
+            # samples_mask is a cumulative indication of whether any of the terms
+            # already occurred in previous decoding steps, by subtracting the
+            # current indicator column k to the previous one, we obtain the
+            # exact number of rows whose first hitting time probability is at
+            # decoding step k.
             hit_probs.append(samples_mask[:, i] - samples_mask[:, i-1])
 
         return SamplingOutput(
