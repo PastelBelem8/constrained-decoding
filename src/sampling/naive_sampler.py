@@ -1,9 +1,9 @@
-from tqdm import tqdm
 from sampling.data_objects import SamplingOutput
 from sampling.base import BaseSampler
 
 import torch
 import torch.nn.functional as F
+import numpy as np
 
 
 class NaiveSampler(BaseSampler):
@@ -116,18 +116,18 @@ class NaiveSampler(BaseSampler):
             logits=all_logits,
         )
 
-    def _sample_marginal(self, sampling_out: SamplingOutput) -> SamplingOutput:
+    def _sample_marginal(self, sampling_out: SamplingOutput, **kwargs) -> SamplingOutput:
         assert sampling_out.description == "NaiveSampler._sample_not_occur"
         assert len(sampling_out.probs) == sampling_out.samples.shape[1]
 
-        samples_term_mask = torch.isin(
+        samples_term_mask = np.isin(
             sampling_out.samples,
             test_elements=sampling_out.terms_ids,
         )
 
         num_tokens = len(sampling_out.probs)
         marginals = [
-            samples_term_mask[:, i].any(dim=-1)
+            samples_term_mask[:, i].any(axis=1) #TODO: AxisError: axis 1 is out of bounds for array of dimension 1
             for i in range(num_tokens)
         ]
 
