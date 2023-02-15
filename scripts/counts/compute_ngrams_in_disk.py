@@ -16,6 +16,7 @@ def read_file(file):
 
     yield None, None
 
+
 def load_tokenizer(model_name: str, num_tokens: int) -> callable:
     if "gpt-neo" in model_name or "gpt2" in model_name:
         # reference: https://huggingface.co/docs/transformers/model_doc/gpt_neo
@@ -27,6 +28,7 @@ def load_tokenizer(model_name: str, num_tokens: int) -> callable:
     # Load models
     tokenizer = tokenizer_class.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
+    tokenizer.pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
 
     tokenize = partial(
         tokenizer.batch_encode_plus,
@@ -35,6 +37,9 @@ def load_tokenizer(model_name: str, num_tokens: int) -> callable:
         padding="max_length",
         add_special_tokens=False,
     )
+
+    print("Tokenizer.pad_token:",tokenizer.pad_token)
+    print("Tokenizer.pad_token_id:",tokenizer.pad_token_id)
 
     return tokenize
 
@@ -78,8 +83,6 @@ def compute_ngrams_by_subset(args, n: int=2, slice: int=300):
 
             if num_file % 1_000_000 == 0:
                 print(f"{args.file} Computed {n}-grams in {num_file} documents")
-
-    print(len(frequencies))
 
     filename = args.file.rpartition("/")[-1]
     for pile_subset, counts in frequencies.items():
@@ -167,4 +170,4 @@ if __name__ == "__main__":
         os.makedirs(args.output_dir, exist_ok=True)
 
     print(args)
-    compute_ngrams(args, args.ngram_size, args.slice)
+    compute_ngrams_by_subset(args, args.ngram_size, args.slice)
