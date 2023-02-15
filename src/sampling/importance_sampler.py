@@ -218,7 +218,7 @@ class ImportanceSampler(BaseSampler):
 
             current_seq_prob = torch.exp(intermediate_model_log_prob + model_log_prob)
             marginals_prob.append(
-                current_seq_prob[..., terms_ids].sum(dim=-1).unsqueeze(-1)
+                current_seq_prob[..., terms_ids].sum(dim=-1).unsqueeze(-1).cpu().detach().numpy()
             )
 
             # model_prob contains the probability of the current tokens
@@ -257,7 +257,7 @@ class ImportanceSampler(BaseSampler):
             )
 
             if return_logits:
-                all_logits.append(F.log_softmax(logits, dim=-1))
+                all_logits.append(F.log_softmax(logits, dim=-1).cpu().detach().numpy())
 
             # If all sequences are finished (unfinished==0), don't keep generating
             if (unfinished_sequences == 0).all():
@@ -271,8 +271,8 @@ class ImportanceSampler(BaseSampler):
         # -------------------------------------------------------------------------
         return SamplingOutput(
             probs=marginals_prob,
-            samples=samples[:,history_len:],
-            terms_ids=terms_ids,
+            samples=samples[:,history_len:].cpu().detach().numpy(),
+            terms_ids=terms_ids.cpu().detach().numpy(),
             logits=all_logits,
             desc="ImportanceSampler._sample_marginal",
         )
