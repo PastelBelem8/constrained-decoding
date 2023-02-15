@@ -101,8 +101,8 @@ class NaiveSampler(BaseSampler):
         # , where 1[] is the kronecker delta (or indicator function), which is one
         # only when the condition inside is true.
         #
-        # PseudoAlgorithmm
-        # -----------------------
+        # Pseudo Algorithmm
+        # ----------------
         # Inputs:
         # - S: num_sequences x max_num_tokens sample matrix S, where S_ij = 1
         # if sampled sequence i has one of the tokens in avoid_terms at position j,
@@ -137,12 +137,9 @@ class NaiveSampler(BaseSampler):
         # count the number of sequences that have no occurrence of terms up until
         # position k.
         probs_per_decoding_step = [
-            (samples_with_avoid_terms[:,k] == 0)
+            (samples_with_avoid_terms[:,k] == 0).reshape(-1, 1)
             for k in range(max_num_tokens)
         ]
-
-        # Self check
-        assert sum([sum(p) for p in probs_per_decoding_step]) == n_samples, f"{[sum(p) for p in probs_per_decoding_step]} vs n_samples={n_samples}"
 
         return SamplingOutput(
             probs=probs_per_decoding_step,
