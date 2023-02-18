@@ -178,15 +178,39 @@ class ImportanceSampler(BaseSampler):
         )
 
     def _sample_marginal(self, input_ids, terms_ids, max_num_tokens, model_kwargs, return_logits=False) -> SamplingOutput:
+        """Computes the marginals of the specified terms_ids for each decoding step in 1, ..., max_num_tokens,
+
+        Computing the probability that any of the terms_ids appears in decoding step 1 is equivalent to:
+        > $P(x_0 \in C) = 1/N \sum_{1..N} (\sum_{c in C} softmax(L_{i, 0})_{c})$
+
+        Now, computing the probability that any of the terms_ids appears in decoding step 2, requires
+        marginalizing over all possible occurrecences for x_0, regardless of whether they contained
+        one of the members in terms_ids or not.
+
+        > $P(x_1 \in C) = P(x_1 \in C, X_0)$
+                       $= P(x_0) 1/N \sum_{1..N} (\sum c in C) softmax(L_{i, 1}_c)$
+
+        , where L_{i,j} are the logits obtained from the model and that represent the
+        conditional distribution over the vocabulary at timestep j given the past
+        generated tokens of the sequence i.
+
+        Logits L will be a 3-dimensional array of shape:
+            num_sequences (N) x max_num_tokens (K) x vocabulary_size (V)
+
+        """
         input_ids = input_ids.to(self.device)
         terms_ids = terms_ids.to(self.device)
         model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
 
         n_samples, history_len = input_ids.shape
         samples = input_ids.clone()
+
+        # Keeps the running probabilities of each sequence i: log P(x_i, x<i)
         intermediate_model_log_prob = torch.zeros(
             (n_samples, 1), dtype=torch.float32
         ).to(self.device)
+        # Vector column representing the sequences for which EOS token has not been
+        # outputted yet.
         unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(
             self.device
         )
@@ -214,15 +238,20 @@ class ImportanceSampler(BaseSampler):
             # ---------------------------------------------------------------------
             # 2. Accumulate log_probabilities
             # ---------------------------------------------------------------------
-            model_log_prob = F.log_softmax(logits, dim=-1)
+            model_prob = F.softmax(logits, dim=-1)
+            # Accumulate the model probability of any of the terms in terms_ids
+            model_terms_prob = model_prob[..., terms_ids].sum(dim=-1).unsqueeze(-1)
+            # Note: The probability above is the conditional probability of observing
+            # any of the terms_ids given all the tokens generated so far. However,
+            # we're interested in the probability of the whole sequence, so we have
+            # to account for the probability of the current sequence.
+            current_seq_prob = intermediate_model_log_prob + torch.log(model_terms_prob)
+            marginals_prob.append(torch.exp(current_seq_prob).cpu().detach().numpy())
 
-            current_seq_prob = torch.exp(intermediate_model_log_prob + model_log_prob)
-            marginals_prob.append(
-                current_seq_prob[..., terms_ids].sum(dim=-1).unsqueeze(-1).cpu().detach().numpy()
-            )
-
-            # model_prob contains the probability of the current tokens
-            model_prob = torch.gather(F.softmax(logits, dim=-1), dim=-1, index=next_tokens)
+            # Now that we have the marginals, we will update the actual sequence
+            # probability (when considering the selected tokens):
+            # model_prob contains the probability of the selected tokens
+            model_prob = torch.gather(model_prob, dim=-1, index=next_tokens)
 
             # ---------------------------------------------------------------------
             # 3. Handle EOS sequences:
