@@ -100,7 +100,7 @@ class Counts:
 
                 # Create json object with counts
                 result = {"ngram": ngram_str}
-                result.update(**counts)
+                result.update(counts)
                 outputs.append(result)
 
                 # Remove from memory
@@ -112,6 +112,10 @@ class Counts:
                with jsonlines.Writer(f_out, sort_keys=True) as writer:
                    writer.write_all(outputs)
 
+        if len(self.ngram2counts) < self.max_ngrams:
+            logger.warn(f"Haven't reached max_ngrams yet: {len(self.ngram2counts)} < {self.max_ngrams}")
+            return
+
         filepath = self.counts_filepath
         head, tail = self.head_tail()
 
@@ -120,7 +124,7 @@ class Counts:
             __save_aux__(filepath, head, keep_in_memory=True)
 
         # keep an idea of how many ngrams have been processed and drop tail
-        tail_filepath += f".tail_at_{self.all_ngrams}"
+        tail_filepath = f"{filepath}.tail_at_{self.all_ngrams}"
         __save_aux__(tail_filepath, tail, keep_in_memory=False)
 
         assert len(self.ngram2counts) == self.max_ngrams, \
@@ -142,6 +146,8 @@ def read_file(filepath: str):
 
 
 def parse_ngrams(tokens, n: int):
+    tokens = tokens["input_ids"]
+
     for i in range(0, len(tokens) - n + 1, 1):
         yield tuple(tokens[i:i+n])
 
@@ -273,6 +279,7 @@ if __name__ == "__main__":
 
         # Randomly sample the chances of processing this document
         r: float = rand.random(1)[0]
+
         try:
             if r <= preprocess_prob:
                 logger.info(f"Processing file id='{num_file}'")
@@ -280,7 +287,8 @@ if __name__ == "__main__":
                 processed_docs += 1
                 subset = doc["meta"]["pile_set_name"]
 
-                tokenized_text = tokenizer(doc["text"])
+                # FIXME - not supporting longer sequences
+                tokenized_text = tokenizer(doc["text"], truncation=True, max_length=tokenizer.max_len_single_sentence)
                 ngrams = parse_ngrams(tokenized_text, n=args.ngram_size)
                 for ngram in ngrams:
                     counts.add(ngram, subset, 1)
