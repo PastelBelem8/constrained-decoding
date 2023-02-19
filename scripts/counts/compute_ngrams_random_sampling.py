@@ -1,8 +1,21 @@
-"""Combine ngrams counts per subset"""
+"""Combines ngrams counts
+
+Algorithm uses a random sampling approach to avoid
+exploding up the memory and taking so much time.
+
+Ideally, we'll get a representative sample of the
+most common expressions.
+"""
 from collections import defaultdict
 from pathlib import Path
 
-import argparse, joblib, jsonlines, os
+import argparse, jsonlines, os
+import zstandard as zstd
+import numpy as np
+import logging
+
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 
 PILE_SUBSETS = (
@@ -30,18 +43,6 @@ PILE_SUBSETS = (
     "YoutubeSubtitles",
 )
 SUBSET2ID = {subset: i for i, subset in enumerate(PILE_SUBSETS)}
-
-
-def read_jsonl_gz(filepath: str):
-    import gzip, json
-
-    with gzip.open(filepath, mode="rt", encoding="utf-8") as f:
-        for row in f:
-            data = json.loads(row)
-            yield data
-    yield None
-
-
 
 
 def default_0():
@@ -75,203 +76,220 @@ class Counts:
         self.ngram2counts[ngram][subset_id] += incr
         self.all_ngrams += 0
 
-    def dump(self):
-        """Dump cache"""
-        def marshal(ngram, counts):
-            ngram_str = ",".join((str(g) for g in ngram))
-            result = {"ngram": ngram_str}
-            result.update(**counts)
-            return result
+    def drop_tail(self):
+        self.save(head=False)
 
-        def unmarshal(obj) -> tuple:
-            if obj is not None:
-                return tuple(map(int, obj["ngram"].split(","))), obj
-            else:
-                return None, None
+    def head_tail(self):
+        # Ascending order
+        ord_counts = sorted(
+            self.ngram2counts.items(),
+            key=lambda ngram: ngram[1]["total_counts"],
+        )
 
-        temp_file = f"{self.counts_filepath}.temp"
-        # Load previous file version (assume it's lexicographically ordered)
-        prev_count_version = iter(read_jsonl_gz(self.counts_filepath))
+        # Keep
+        head = ord_counts[-self.max_ngrams:]
+        tail = ord_counts[:-self.max_ngrams]
+        return head, tail
 
-        sorted_ngrams = sorted(self.ngram2counts.keys())
+    def save(self, head: bool=True):
+        def __save_aux__(filepath, data, keep_in_memory=True):
+            outputs = []
+            for ngram, counts in data:
+                # Serialize ngram tuple representation: (1, 2) --> "1, 2"
+                ngram_str = ",".join((str(g) for g in ngram))
 
-        with open(temp_file, "wb") as f_out:
-            with jsonlines.Writer(f_out, sort_keys=True) as writer:
+                # Create json object with counts
+                result = {"ngram": ngram_str}
+                result.update(**counts)
+                outputs.append(result)
 
-                # Write down the ngrams in lexicographic order
-                buffer = []
-                while (data := next(prev_count_version)) != None:
-                    prev_ngram, prev_ngram_obj = unmarshal(data)
+                # Remove from memory
+                if not keep_in_memory:
+                    self.ngram2counts.pop(ngram)
 
-                    if len(sorted_ngrams) == 0:
+            logger.info(f"Logging counts to file: {filepath}")
+            with open(filepath, "wb") as f_out:
+               with jsonlines.Writer(f_out, sort_keys=True) as writer:
+                   writer.write_all(outputs)
 
-                    while len(sorted_ngrams) > 0 and (curr_ngram := sorted_ngrams.pop(0)) < prev_ngram:
-                        curr_ngram_obj = self.ngram2counts[curr_ngram]
-                        buffer.append(marshal(curr_ngram, curr_ngram_obj))
+        filepath = self.counts_filepath
+        head, tail = self.head_tail()
 
-                    # if ran out of sorted_ngrams
+        # By default save head
+        if head:
+            __save_aux__(filepath, head, keep_in_memory=True)
 
+        # keep an idea of how many ngrams have been processed and drop tail
+        tail_filepath += f".tail_at_{self.all_ngrams}"
+        __save_aux__(tail_filepath, tail, keep_in_memory=False)
 
-                    # if current ngram matches prev ngram, then update the counts
-                    if curr_ngram == prev_ngram:
-                        curr_ngram_obj = self.ngram2counts[curr_ngram]
-
-                        updated_ngram = prev_ngram_obj
-
-                        for key, counts in curr_ngram_obj.items():
-                            updated_ngram[key] += counts
-
-                        buffer.append(marshal(ngram, updated_ngram))
-
-
-
-
+        assert len(self.ngram2counts) == self.max_ngrams, \
+            f"Total ngrams {len(self.ngram2counts)} but expected {self.max_ngrams} after save."
 
 
+def read_file(filepath: str):
+    import json
 
-                        buffer.extend([
-                            marshal(ngram, self.ngram2counts[ngram]) for ngram in sorted_ngrams[:id]])
+    key = 0
+    with open(filepath, "rb") as f1:
+        with zstd.open(f1, "rt", encoding="utf-8") as f:
+            for row in f:
+                data = json.loads(row)
+                yield key, data
+                key += 1
 
-
-
-                        writer.write_all(buffer)
-
-                        buffer = []
-                        sorted_ngrams = sorted_ngrams[id+1:]
-
-
-
-
-        # todo: rename temp_file to self.counts_filepath
+    yield None, None
 
 
+def parse_ngrams(tokens, n: int):
+    for i in range(0, len(tokens) - n + 1, 1):
+        yield tuple(tokens[i:i+n])
+
+def create_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-file", "--pile-file", type=str,
+        required=True,
+        help="Path to the PILE file to be indexed"
+    )
+    parser.add_argument(
+        "-model",
+        "--model-name",
+        default="EleutherAI/gpt-neo-125M",
+        help="Model name",
+    )
+
+    parser.add_argument(
+        "-p",
+        "--docs-pct",
+        type=float,
+        default=0.1,
+        help="Probability of tokenizing a document.",
+    )
+
+    parser.add_argument(
+        "-s",
+        "--seed",
+        type=int,
+        default=874812,
+        help="Probability of tokenizing a document.",
+    )
+
+    parser.add_argument(
+        "-n", "--ngram-size",
+        type=int,
+        default=3
+    )
+
+    parser.add_argument(
+        "-c", "--max-ngrams-in-memory",
+        type=int,
+        default=10_000,
+        help="Number of ngrams to keep in memory at all times"
+    )
+
+    parser.add_argument(
+        "-dtf", "--drop-tail-freq",
+        type=int,
+        default=500_000,
+        help="How often to call drop tail in terms of documents processed",
+    )
+
+    parser.add_argument(
+        "-o", "--output-dir", default="./temp", help="Path to a temporary directory."
+    )
+    return parser
 
 
+def load_tokenizer(model_name: str) -> callable:
+    model_name_lwr = model_name.lower()
+    if "gpt-neo" in model_name_lwr or "gpt2" in model_name_lwr:
+        # reference: https://huggingface.co/docs/transformers/model_doc/gpt_neo
+        from transformers import GPT2TokenizerFast
+        tokenizer_class = GPT2TokenizerFast
+    else:
+        raise NotImplemented
 
+    # Load models
+    logger.info(f"Loading {tokenizer_class.__name__}")
+    tokenizer = tokenizer_class.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
+    tokenizer.pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
 
+    return tokenizer
 
+def setup_logger(path):
+    global logger
 
+    # Create handlers
+    c_handler = logging.StreamHandler()
+    c_handler.setLevel(logging.DEBUG)
+    c_format = logging.Formatter('[%(asctime)s][%(levelname)s]: %(message)s', datefmt='%d-%b-%y %H:%M:%S')
+    c_handler.setFormatter(c_format)
 
+    f_handler = logging.FileHandler(path)
+    f_handler.setLevel(logging.INFO)
+    f_format = logging.Formatter('[%(asctime)s][%(levelname)s]: %(message)s', datefmt='%d-%b-%y %H:%M:%S')
+    f_handler.setFormatter(f_format)
 
-                for ngram in sorted_ngrams:
-                    if prev_ngram is None or prev_ngram > ngram:
-                        ngram_obj = self.ngram2counts[ngram]
-                        buffer.append(marshal(ngram, ngram_obj))
-                    elif prev_ngram < ngram:
-                        buffer.append(prev_ngram_obj)
-                        prev_ngram, prev_ngram_obj = unmarshal(next(prev_count_version))
-                    else:
-                        # update counts and dump buffer
-                        updated_ngram = prev_ngram
-
-                        for key, counts in self.ngram2counts[ngram].items():
-                            updated_ngram[key] += counts
-
-                        buffer.append(updated_ngram)
-
-
-                IF
-                if len(buffer) > 0:
-                    writer.write_all(buffer)
-                    buffer = []
-
-
-        # ---------------------------------------------------------------------------------
-        # Store information in jsonlines, compressed
-        # ---------------------------------------------------------------------------------
-        # {ngram_i: (t1,...,tn), total_counts: N, subset_id_0: counts_subset_id, ... subset_id_21: counts_subset_id}
-        # ...
-        # {ngram_k: (t1,...,tn), total_counts: N, subset_id_0: counts_subset_id, ... subset_id_21: counts_subset_id}
-        # ---------------------------------------------------------------------------------
-
-
-
-
-
-
-
-if not self.out_filepath.parent.exists():
-    os.makedirs(self.out_filepath.parent)
-else:
-    print(self.out_filepath.parent, "already exists...")
-
-
-
-
+    # Add handlers to the logger
+    logger.addHandler(c_handler)
+    logger.addHandler(f_handler)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument
-    parser.add_argument("-s", "--subset", type=str, required=True)
+    parser = create_parser()
     args = parser.parse_args()
 
-    base_dir = "/srv/nvme0/ucinlp/cbelem/PILE-30-bigrams"
-    filenames_in_base_dir = os.listdir(base_dir)
-    assert filenames_in_base_dir != [], f"Empty directory: {base_dir}"
+    assert 0 < args.docs_pct <= 1
 
-    filenames_per_subset = group_by_subset(filenames_in_base_dir)
-    subset = args.subset
-    filenames = sorted(filenames_per_subset[subset])
-    print("Aggregating", subset)
-    counts = joblib.load(f"{base_dir}/{filenames[0]}")
+    # Create directory
+    filename = args.pile_file.rpartition("/")[-1]
+    filename = filename.split(".")[0]
+    output_dir = f"{args.output_dir}/{filename}"
+    os.makedirs(output_dir, exist_ok=True)
 
-    for filename in tqdm(filenames[1:]):
+    setup_logger(f"{output_dir}/compute_ngrams.log")
+    logger.debug(args)
+
+    # Tokenization
+    tokenizer: callable = load_tokenizer(args.model_name)
+
+    # Data structure with the counts per subset
+    counts = Counts(
+        n=args.ngram_size,
+        max_ngrams=args.max_ngrams_in_memory,
+        out_dir=args.output_dir,
+    )
+
+    rand = np.random.default_rng(args.seed)
+    preprocess_prob = args.docs_pct
+    # Documents
+    data_iter = iter(read_file(args.pile_file))
+
+    processed_docs = 0
+    while (data := next(data_iter)) != (None, None):
+        num_file, doc = data
+
+        # Randomly sample the chances of processing this document
+        r: float = rand.random(1)[0]
         try:
-            with open(f"{base_dir}/{filename}", "rb") as f:
-                file_counts = joblib.load(f)
-            update_counts(counts, file_counts)
-        except:
-            print("Error in file:", filename)
+            if r <= preprocess_prob:
+                logger.info(f"Processing file id='{num_file}'")
 
-    joblib.dump(counts, f"{base_dir}-agg/{subset}.pkl")
-"""Combine ngrams counts per subset"""
-from tqdm import tqdm
-from typing import List
+                processed_docs += 1
+                subset = doc["meta"]["pile_set_name"]
 
-import argparse, joblib, os
+                tokenized_text = tokenizer(doc["text"])
+                ngrams = parse_ngrams(tokenized_text, n=args.ngram_size)
+                for ngram in ngrams:
+                    counts.add(ngram, subset, 1)
 
+                if processed_docs % args.drop_tail_freq == 0:
+                    logger.info(f"Dropping tail after {processed_docs} documents")
+                    counts.drop_tail()
+                    break
 
-def group_by_subset(filenames: List[str]):
-    filenames_per_subset = {}
-
-    for filename in filenames:
-        # filename is structured as follows:
-        # <json.std_filename>_<subset>_<ngram-size>-<tokens-counts>
-        subset = filename.split("_")[1]
-
-        subset_filenames = filenames_per_subset.setdefault(subset, [])
-        subset_filenames.append(filename)
-
-    return filenames_per_subset
-
-def update_counts(new_counts, vals):
-    for ngram, pos_counts in vals.counts.items():
-        for pos, count in pos_counts.items():
-            new_counts.add(ngram, pos, count)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-s", "--subset", type=str, required=True)
-    args = parser.parse_args()
-
-    base_dir = "/srv/nvme0/ucinlp/cbelem/PILE-30-bigrams"
-    filenames_in_base_dir = os.listdir(base_dir)
-    assert filenames_in_base_dir != [], f"Empty directory: {base_dir}"
-
-    filenames_per_subset = group_by_subset(filenames_in_base_dir)
-    subset = args.subset
-    filenames = sorted(filenames_per_subset[subset])
-    print("Aggregating", subset)
-    counts = joblib.load(f"{base_dir}/{filenames[0]}")
-
-    for filename in tqdm(filenames[1:]):
-        try:
-            with open(f"{base_dir}/{filename}", "rb") as f:
-                file_counts = joblib.load(f)
-            update_counts(counts, file_counts)
-        except:
-            print("Error in file:", filename)
-
-    joblib.dump(counts, f"{base_dir}-agg/{subset}.pkl")
+        except Exception as e:
+              logger.error("Exception occurred", exc_info=True)
+    counts.save()
