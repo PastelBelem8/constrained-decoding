@@ -48,6 +48,7 @@ SUBSET2ID = {subset: i for i, subset in enumerate(PILE_SUBSETS)}
 def default_0():
     return 0
 
+
 def default_init():
     return defaultdict(default_0)
 
@@ -70,7 +71,7 @@ class Counts:
         self.out_dir = out_dir
         self.counts_filepath = f"{self.out_dir}/{n}-gram.jsonl.gz"
 
-    def add(self, ngram: tuple, subset: str, incr: int=1):
+    def add(self, ngram: tuple, subset: str, incr: int = 1):
         subset_id = SUBSET2ID[subset]
         self.ngram2counts[ngram]["total_counts"] += incr
         self.ngram2counts[ngram][subset_id] += incr
@@ -87,11 +88,11 @@ class Counts:
         )
 
         # Keep
-        head = ord_counts[-self.max_ngrams:]
-        tail = ord_counts[:-self.max_ngrams]
+        head = ord_counts[-self.max_ngrams :]
+        tail = ord_counts[: -self.max_ngrams]
         return head, tail
 
-    def save(self, head: bool=True):
+    def save(self, head: bool = True):
         def __save_aux__(filepath, data, keep_in_memory=True):
             outputs = []
             for ngram, counts in data:
@@ -109,11 +110,13 @@ class Counts:
 
             logger.info(f"Logging counts to file: {filepath}")
             with open(filepath, "wb") as f_out:
-               with jsonlines.Writer(f_out) as writer:
-                   writer.write_all(outputs)
+                with jsonlines.Writer(f_out) as writer:
+                    writer.write_all(outputs)
 
         if len(self.ngram2counts) < self.max_ngrams:
-            logger.warn(f"Haven't reached max_ngrams yet: {len(self.ngram2counts)} < {self.max_ngrams}")
+            logger.warn(
+                f"Haven't reached max_ngrams yet: {len(self.ngram2counts)} < {self.max_ngrams}"
+            )
             return
 
         filepath = self.counts_filepath
@@ -127,8 +130,9 @@ class Counts:
         tail_filepath = f"{filepath}.tail_at_{self.all_ngrams}"
         __save_aux__(tail_filepath, tail, keep_in_memory=False)
 
-        assert len(self.ngram2counts) == self.max_ngrams, \
-            f"Total ngrams {len(self.ngram2counts)} but expected {self.max_ngrams} after save."
+        assert (
+            len(self.ngram2counts) == self.max_ngrams
+        ), f"Total ngrams {len(self.ngram2counts)} but expected {self.max_ngrams} after save."
 
 
 def read_file(filepath: str):
@@ -153,9 +157,11 @@ def read_file(filepath: str):
 def create_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-file", "--pile-file", type=str,
+        "-file",
+        "--pile-file",
+        type=str,
         required=True,
-        help="Path to the PILE file to be indexed"
+        help="Path to the PILE file to be indexed",
     )
     parser.add_argument(
         "-model",
@@ -164,21 +170,19 @@ def create_parser():
         help="Model name",
     )
 
-    parser.add_argument(
-        "-n", "--ngram-size",
-        type=int,
-        default=3
-    )
+    parser.add_argument("-n", "--ngram-size", type=int, default=3)
 
     parser.add_argument(
-        "-c", "--max-ngrams-in-memory",
+        "-c",
+        "--max-ngrams-in-memory",
         type=int,
         default=10_000,
-        help="Number of ngrams to keep in memory at all times"
+        help="Number of ngrams to keep in memory at all times",
     )
 
     parser.add_argument(
-        "-dtn", "--drop-tail-ngrams",
+        "-dtn",
+        "--drop-tail-ngrams",
         type=int,
         default=500_000,
         help="How often to call drop tail in terms of ngrams in memory.",
@@ -192,10 +196,12 @@ def create_parser():
 
 def load_tokenizer(model_name: str, num_tokens) -> callable:
     from functools import partial
+
     model_name_lwr = model_name.lower()
     if "gpt-neo" in model_name_lwr or "gpt2" in model_name_lwr:
         # reference: https://huggingface.co/docs/transformers/model_doc/gpt_neo
         from transformers import GPT2TokenizerFast
+
         tokenizer_class = GPT2TokenizerFast
     else:
         raise NotImplemented
@@ -213,18 +219,23 @@ def load_tokenizer(model_name: str, num_tokens) -> callable:
         padding="max_length",
     )
 
+
 def setup_logger(path):
     global logger
 
     # Create handlers
     c_handler = logging.StreamHandler()
     c_handler.setLevel(logging.DEBUG)
-    c_format = logging.Formatter('[%(asctime)s][%(levelname)s]: %(message)s', datefmt='%d-%b-%y %H:%M:%S')
+    c_format = logging.Formatter(
+        "[%(asctime)s][%(levelname)s]: %(message)s", datefmt="%d-%b-%y %H:%M:%S"
+    )
     c_handler.setFormatter(c_format)
 
     f_handler = logging.FileHandler(path)
     f_handler.setLevel(logging.INFO)
-    f_format = logging.Formatter('[%(asctime)s][%(levelname)s]: %(message)s', datefmt='%d-%b-%y %H:%M:%S')
+    f_format = logging.Formatter(
+        "[%(asctime)s][%(levelname)s]: %(message)s", datefmt="%d-%b-%y %H:%M:%S"
+    )
     f_handler.setFormatter(f_format)
 
     # Add handlers to the logger
@@ -276,17 +287,19 @@ if __name__ == "__main__":
 
             # Process text
             text = doc["text"]
-            text_ids = filter(lambda i:
-                (i == 0 or text[i] in "!,.?-;:") and len(text) - i > size,
-                range(len(text))
+            text_ids = filter(
+                lambda i: (i == 0 or text[i] in "!,.?-;:") and len(text) - i > size,
+                range(len(text)),
             )
 
             for text_id in text_ids:
                 # Tokenize text
-                tokenized_text = tokenizer(text[text_id:text_id+size]) # FIXME: BATCH TOKENIZER ?
+                tokenized_text = tokenizer(
+                    text[text_id : text_id + size]
+                )  # FIXME: BATCH TOKENIZER ?
 
                 # Collect only the n-gram after the punctuation
-                ngram = tokenized_text["input_ids"][:args.ngram_size]
+                ngram = tokenized_text["input_ids"][: args.ngram_size]
                 counts.add(tuple(ngram), subset, 1)
 
             if len(counts.ngram2counts) % args.drop_tail_ngrams == 0:
@@ -295,7 +308,7 @@ if __name__ == "__main__":
                 break
 
         except Exception as e:
-              logger.error("Exception occurred", exc_info=True)
+            logger.error("Exception occurred", exc_info=True)
 
     logger.info("Saving final counts...")
     counts.save()
