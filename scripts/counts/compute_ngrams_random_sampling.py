@@ -109,7 +109,7 @@ class Counts:
 
             logger.info(f"Logging counts to file: {filepath}")
             with open(filepath, "wb") as f_out:
-               with jsonlines.Writer(f_out, sort_keys=True) as writer:
+               with jsonlines.Writer(f_out) as writer:
                    writer.write_all(outputs)
 
         if len(self.ngram2counts) < self.max_ngrams:
@@ -142,14 +142,13 @@ def read_file(filepath: str):
                 yield key, data
                 key += 1
 
+                # FIXME: Just to debug
+                if key == 10_000:
+                    yield None, None
+                    return NotImplementedError
+
     yield None, None
 
-
-def parse_ngrams(tokens, n: int):
-    tokens = tokens["input_ids"]
-
-    for i in range(0, len(tokens) - n + 1, 1):
-        yield tuple(tokens[i:i+n])
 
 def create_parser():
     parser = argparse.ArgumentParser()
@@ -166,22 +165,6 @@ def create_parser():
     )
 
     parser.add_argument(
-        "-p",
-        "--docs-pct",
-        type=float,
-        default=0.1,
-        help="Probability of tokenizing a document.",
-    )
-
-    parser.add_argument(
-        "-s",
-        "--seed",
-        type=int,
-        default=874812,
-        help="Probability of tokenizing a document.",
-    )
-
-    parser.add_argument(
         "-n", "--ngram-size",
         type=int,
         default=3
@@ -195,10 +178,10 @@ def create_parser():
     )
 
     parser.add_argument(
-        "-dtf", "--drop-tail-freq",
+        "-dtn", "--drop-tail-ngrams",
         type=int,
         default=500_000,
-        help="How often to call drop tail in terms of documents processed",
+        help="How often to call drop tail in terms of ngrams in memory.",
     )
 
     parser.add_argument(
@@ -207,7 +190,8 @@ def create_parser():
     return parser
 
 
-def load_tokenizer(model_name: str) -> callable:
+def load_tokenizer(model_name: str, num_tokens) -> callable:
+    from functools import partial
     model_name_lwr = model_name.lower()
     if "gpt-neo" in model_name_lwr or "gpt2" in model_name_lwr:
         # reference: https://huggingface.co/docs/transformers/model_doc/gpt_neo
@@ -222,7 +206,12 @@ def load_tokenizer(model_name: str) -> callable:
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
     tokenizer.pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
 
-    return tokenizer
+    return partial(
+        tokenizer,
+        max_length=num_tokens,
+        truncation=True,
+        padding="max_length",
+    )
 
 def setup_logger(path):
     global logger
@@ -259,7 +248,7 @@ if __name__ == "__main__":
     logger.debug(args)
 
     # Tokenization
-    tokenizer: callable = load_tokenizer(args.model_name)
+    tokenizer: callable = load_tokenizer(args.model_name, args.ngram_size)
 
     # Data structure with the counts per subset
     counts = Counts(
@@ -268,8 +257,10 @@ if __name__ == "__main__":
         out_dir=args.output_dir,
     )
 
-    rand = np.random.default_rng(args.seed)
-    preprocess_prob = args.docs_pct
+    # Heuristic to define the next ngram_size tokens is that they
+    # are encoded in terms of 20 characters.
+    size = 20 * args.ngram_size
+
     # Documents
     data_iter = iter(read_file(args.pile_file))
 
@@ -277,27 +268,34 @@ if __name__ == "__main__":
     while (data := next(data_iter)) != (None, None):
         num_file, doc = data
 
-        # Randomly sample the chances of processing this document
-        r: float = rand.random(1)[0]
-
         try:
-            if r <= preprocess_prob:
-                logger.info(f"Processing file id='{num_file}'")
+            logger.info(f"Processing file id='{num_file}'")
 
-                processed_docs += 1
-                subset = doc["meta"]["pile_set_name"]
+            processed_docs += 1
+            subset = doc["meta"]["pile_set_name"]
 
-                # FIXME - not supporting longer sequences
-                tokenized_text = tokenizer(doc["text"], truncation=True, max_length=tokenizer.max_len_single_sentence)
-                ngrams = parse_ngrams(tokenized_text, n=args.ngram_size)
-                for ngram in ngrams:
-                    counts.add(ngram, subset, 1)
+            # Process text
+            text = doc["text"]
+            text_ids = filter(lambda i:
+                (i == 0 or text[i] in "!,.?-;:") and len(text) - i > size,
+                range(len(text))
+            )
 
-                if processed_docs % args.drop_tail_freq == 0:
-                    logger.info(f"Dropping tail after {processed_docs} documents")
-                    counts.drop_tail()
-                    break
+            for text_id in text_ids:
+                # Tokenize text
+                tokenized_text = tokenizer(text[text_id:text_id+size]) # FIXME: BATCH TOKENIZER ?
+
+                # Collect only the n-gram after the punctuation
+                ngram = tokenized_text["input_ids"][:args.ngram_size]
+                counts.add(tuple(ngram), subset, 1)
+
+            if len(counts.ngram2counts) % args.drop_tail_ngrams == 0:
+                logger.info(f"Dropping tail after {processed_docs} documents")
+                counts.drop_tail()
+                break
 
         except Exception as e:
               logger.error("Exception occurred", exc_info=True)
+
+    logger.info("Saving final counts...")
     counts.save()
