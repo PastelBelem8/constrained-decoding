@@ -7,16 +7,84 @@ Ideally, we'll get a representative sample of the
 most common expressions.
 """
 from collections import defaultdict
-from pathlib import Path
 
-import argparse, jsonlines, os
+import argparse, jsonlines, os, sys
 import zstandard as zstd
-import numpy as np
+import gzip
 import logging
 
 
-logger: logging.Logger = logging.getLogger(__name__)
+logger: logging.Logger = None
 
+class CustomFormatter(logging.Formatter):
+
+    grey = "\x1b[38;20m"
+    yellow = "\x1b[33;20m"
+    red = "\x1b[31;20m"
+    bold_red = "\x1b[31;1m"
+    reset = "\x1b[0m"
+    format = "[%(asctime)s][%(levelname)s] - %(lineno)d: %(message)s"
+
+    FORMATS = {
+        logging.DEBUG: grey + format + reset,
+        logging.INFO: grey + format + reset,
+        logging.WARNING: yellow + format + reset,
+        logging.ERROR: red + format + reset,
+        logging.CRITICAL: bold_red + format + reset
+    }
+
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        print(record.levelno)
+        formatter = logging.Formatter(log_fmt,  datefmt="%d-%b-%y %H:%M:%S")
+        return formatter.format(record)
+
+
+# Add whitespace after the token to capture the "individual" words
+TOKENS_OF_INTEREST = list(map(str.lower, map(lambda s: f"{s} ",  (
+    # ----------------------------------------------
+    # Punctuation
+    # ----------------------------------------------
+    "\\.", ",", "-", ":", "!", "\\?", ";",
+
+    # ----------------------------------------------
+    # Common words (https://www.collocates.info/iweb.asp)
+    # ----------------------------------------------
+    "Hello", "Here", "While", "For", "and",
+    "The", "There", "This", "That",
+    "What", "How", "Where",
+    "Once", "end",
+    "Thank",
+    "If", "With", "By",
+    # Verbs
+    "can", "may", "want", "have", "like", "born",
+
+    # ----------------------------------------------
+    # Common words according to 14 billion word corpus
+    # ----------------------------------------------
+    "time", "some", "part", "not",
+    # ----------------------------------------------
+    # pronouns
+    # ----------------------------------------------
+    "I", "You", "He", "She", "They", "Them",
+    # ----------------------------------------------
+    # possessive pronouns
+    # ----------------------------------------------
+    "My", "Yours", "Hers", "His", "Theirs",
+    # ----------------------------------------------
+    # Other interesting words
+    # ----------------------------------------------
+    "doctor", "nurse", "model", "physician", "therapist",
+    "dog", "cat", "horse", "butterfly", "bird", "fish"
+    # Emotions
+    "crazy", "happy", "sad", "love", "angry", "joy", "upset", "tired", "anxious", "horror", "fear", "tired", "pain", "calm",
+
+    "negative", "positive", "great", "bad", "good", "terrible", "neutral",
+    # Religion
+    "christian", "jewish", "muslim",
+))))
+
+print("\n" * 8, "#" * 100, "\n", sorted(TOKENS_OF_INTEREST), "\n", "#" * 100, "\n" * 8)
 
 PILE_SUBSETS = (
     "ArXiv",
@@ -54,7 +122,7 @@ def default_init():
 
 
 class Counts:
-    def __init__(self, n: int, max_ngrams: int = 10_000, out_dir: Path = "./temp"):
+    def __init__(self, n: int, max_ngrams: int = 10_000, out_dir = "./temp"):
         # Tracks the total number of ngrams processed
         self.all_ngrams = 0
 
@@ -72,24 +140,23 @@ class Counts:
         self.counts_filepath = f"{self.out_dir}/{n}-gram.jsonl.gz"
 
     def add(self, ngram: tuple, subset: str, incr: int = 1):
+
         subset_id = SUBSET2ID[subset]
         self.ngram2counts[ngram]["total_counts"] += incr
         self.ngram2counts[ngram][subset_id] += incr
-        self.all_ngrams += 0
-
-    def drop_tail(self):
-        self.save(head=False)
+        self.all_ngrams += incr
 
     def head_tail(self):
         # Ascending order
         ord_counts = sorted(
             self.ngram2counts.items(),
             key=lambda ngram: ngram[1]["total_counts"],
+            reverse=True,
         )
 
         # Keep
-        head = ord_counts[-self.max_ngrams :]
-        tail = ord_counts[: -self.max_ngrams]
+        head = ord_counts[:self.max_ngrams]
+        tail = ord_counts[self.max_ngrams:]
         return head, tail
 
     def save(self, head: bool = True):
@@ -108,13 +175,14 @@ class Counts:
                 if not keep_in_memory:
                     self.ngram2counts.pop(ngram)
 
-            logger.info(f"Logging counts to file: {filepath}")
-            with open(filepath, "wb") as f_out:
-                with jsonlines.Writer(f_out) as writer:
-                    writer.write_all(outputs)
+            if len(outputs) > 0:
+                logger.info(f"Logging counts to file: {filepath}")
+                with gzip.open(filepath, "wb") as f_out:
+                    with jsonlines.Writer(f_out) as writer:
+                        writer.write_all(outputs)
 
         if len(self.ngram2counts) < self.max_ngrams:
-            logger.warn(
+            logger.warning(
                 f"Haven't reached max_ngrams yet: {len(self.ngram2counts)} < {self.max_ngrams}"
             )
             return
@@ -127,8 +195,10 @@ class Counts:
             __save_aux__(filepath, head, keep_in_memory=True)
 
         # keep an idea of how many ngrams have been processed and drop tail
-        tail_filepath = f"{filepath}.tail_at_{self.all_ngrams}"
+        tail_filepath = f"{filepath}.tail_at_{self.all_ngrams}.gz"
+        print("Before: dropping", len(self.ngram2counts), "{self.all_ngrams}")
         __save_aux__(tail_filepath, tail, keep_in_memory=False)
+        print("After: dropping", len(self.ngram2counts), "{self.all_ngrams}")
 
         assert (
             len(self.ngram2counts) == self.max_ngrams
@@ -145,11 +215,6 @@ def read_file(filepath: str):
                 data = json.loads(row)
                 yield key, data
                 key += 1
-
-                # FIXME: Just to debug
-                if key == 10_000:
-                    yield None, None
-                    return NotImplementedError
 
     yield None, None
 
@@ -184,8 +249,8 @@ def create_parser():
         "-dtn",
         "--drop-tail-ngrams",
         type=int,
-        default=500_000,
-        help="How often to call drop tail in terms of ngrams in memory.",
+        default=200_000,
+        help="When to drop tail in terms of ngrams in memory.",
     )
 
     parser.add_argument(
@@ -223,35 +288,46 @@ def load_tokenizer(model_name: str, num_tokens) -> callable:
 def setup_logger(path):
     global logger
 
+    logger =  logging.getLogger()
+    logger.setLevel(logging.DEBUG)
     # Create handlers
-    c_handler = logging.StreamHandler()
+    c_handler = logging.StreamHandler(sys.stdout)
     c_handler.setLevel(logging.DEBUG)
-    c_format = logging.Formatter(
-        "[%(asctime)s][%(levelname)s]: %(message)s", datefmt="%d-%b-%y %H:%M:%S"
-    )
-    c_handler.setFormatter(c_format)
+    c_handler.setFormatter(CustomFormatter())
 
     f_handler = logging.FileHandler(path)
     f_handler.setLevel(logging.INFO)
-    f_format = logging.Formatter(
+    f.handler.setFormatter(logging.Formatter(
         "[%(asctime)s][%(levelname)s]: %(message)s", datefmt="%d-%b-%y %H:%M:%S"
-    )
-    f_handler.setFormatter(f_format)
+    ))
 
     # Add handlers to the logger
     logger.addHandler(c_handler)
     logger.addHandler(f_handler)
+
+    logger.info("HELLOOOOO")
+    logger.error("HELLOOOOO")
+
+
+
+def index_of_tokens(text: str, tokens: list):
+    # inspired by https://docs.python.org/3/library/re.html#finding-all-adverbs-and-their-positions
+    import re
+    text = text.lower()
+    regex_expr = "|".join(tokens)
+
+    for m in re.finditer(regex_expr, text):
+        # return first index of the token and the token itself
+        yield m.start(), m.group(0)
 
 
 if __name__ == "__main__":
     parser = create_parser()
     args = parser.parse_args()
 
-    assert 0 < args.docs_pct <= 1
-
     # Create directory
     filename = args.pile_file.rpartition("/")[-1]
-    filename = filename.split(".")[0]
+    filename = filename.replace(".", "")
     output_dir = f"{args.output_dir}/{filename}"
     os.makedirs(output_dir, exist_ok=True)
 
@@ -265,12 +341,12 @@ if __name__ == "__main__":
     counts = Counts(
         n=args.ngram_size,
         max_ngrams=args.max_ngrams_in_memory,
-        out_dir=args.output_dir,
+        out_dir=output_dir,
     )
 
     # Heuristic to define the next ngram_size tokens is that they
     # are encoded in terms of 20 characters.
-    size = 20 * args.ngram_size
+    SIZE = 20 * args.ngram_size
 
     # Documents
     data_iter = iter(read_file(args.pile_file))
@@ -280,32 +356,27 @@ if __name__ == "__main__":
         num_file, doc = data
 
         try:
-            logger.info(f"Processing file id='{num_file}'")
 
             processed_docs += 1
             subset = doc["meta"]["pile_set_name"]
 
             # Process text
             text = doc["text"]
-            text_ids = filter(
-                lambda i: (i == 0 or text[i] in "!,.?-;:") and len(text) - i > size,
-                range(len(text)),
-            )
 
-            for text_id in text_ids:
+            for text_id, token in index_of_tokens(text, TOKENS_OF_INTEREST):
+                text_id = max(0, text_id-1) # to capture the idea of whether there's a space or not
                 # Tokenize text
                 tokenized_text = tokenizer(
-                    text[text_id : text_id + size]
-                )  # FIXME: BATCH TOKENIZER ?
+                    text[text_id:text_id+SIZE]
+                )
 
                 # Collect only the n-gram after the punctuation
-                ngram = tokenized_text["input_ids"][: args.ngram_size]
+                ngram = tokenized_text["input_ids"]
                 counts.add(tuple(ngram), subset, 1)
 
             if len(counts.ngram2counts) % args.drop_tail_ngrams == 0:
-                logger.info(f"Dropping tail after {processed_docs} documents")
-                counts.drop_tail()
-                break
+                logger.info(f"Num file: {num_file} | #(Unique ngrams):{len(counts.ngram2counts)} \n Dropping tail...")
+                counts.save(head=True)
 
         except Exception as e:
             logger.error("Exception occurred", exc_info=True)
