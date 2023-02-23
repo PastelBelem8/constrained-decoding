@@ -249,7 +249,7 @@ def create_parser():
         "-dtn",
         "--drop-tail-ngrams",
         type=int,
-        default=200_000,
+        default=300_000,
         help="When to drop tail in terms of ngrams in memory.",
     )
 
@@ -297,7 +297,7 @@ def setup_logger(path):
 
     f_handler = logging.FileHandler(path)
     f_handler.setLevel(logging.INFO)
-    f.handler.setFormatter(logging.Formatter(
+    f_handler.setFormatter(logging.Formatter(
         "[%(asctime)s][%(levelname)s]: %(message)s", datefmt="%d-%b-%y %H:%M:%S"
     ))
 
@@ -307,7 +307,6 @@ def setup_logger(path):
 
     logger.info("HELLOOOOO")
     logger.error("HELLOOOOO")
-
 
 
 def index_of_tokens(text: str, tokens: list):
@@ -374,9 +373,11 @@ if __name__ == "__main__":
                 ngram = tokenized_text["input_ids"]
                 counts.add(tuple(ngram), subset, 1)
 
-            if len(counts.ngram2counts) % args.drop_tail_ngrams == 0:
-                logger.info(f"Num file: {num_file} | #(Unique ngrams):{len(counts.ngram2counts)} \n Dropping tail...")
-                counts.save(head=True)
+                if len(counts.ngram2counts) % args.drop_tail_ngrams == 0:
+                    logger.info(f"Num file: {num_file} | #(Unique ngrams): {len(counts.ngram2counts)}.")
+                    logger.debug(f" Dropping tail after {args.drop_tail_ngrams} different tokens have been found")
+                    counts.save(head=True)
+                    logger.debug("Done!")
 
         except Exception as e:
             logger.error("Exception occurred", exc_info=True)
