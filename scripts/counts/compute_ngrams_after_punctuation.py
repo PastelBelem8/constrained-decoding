@@ -7,8 +7,9 @@ Ideally, we'll get a representative sample of the
 most common expressions.
 """
 from collections import defaultdict
+from datetime import datetime
 
-import argparse, jsonlines, os, sys
+import argparse, json, jsonlines, os, sys
 import zstandard as zstd
 import gzip
 import logging
@@ -70,21 +71,19 @@ TOKENS_OF_INTEREST = list(map(str.lower, map(lambda s: f"{s} ",  (
     # ----------------------------------------------
     # possessive pronouns
     # ----------------------------------------------
-    "My", "Yours", "Hers", "His", "Theirs",
+    "Mine", "Yours", "Hers", "His", "Theirs",
     # ----------------------------------------------
     # Other interesting words
     # ----------------------------------------------
     "doctor", "nurse", "model", "physician", "therapist",
     "dog", "cat", "horse", "butterfly", "bird", "fish"
     # Emotions
-    "crazy", "happy", "sad", "love", "angry", "joy", "upset", "tired", "anxious", "horror", "fear", "tired", "pain", "calm",
+    "crazy", "happy", "sad", "love", "angry", "joy", "upset",  "fear", "pain",
 
     "negative", "positive", "great", "bad", "good", "terrible", "neutral",
     # Religion
-    "christian", "jewish", "muslim",
+    # "christian", "jewish", "muslim",
 ))))
-
-print("\n" * 8, "#" * 100, "\n", sorted(TOKENS_OF_INTEREST), "\n", "#" * 100, "\n" * 8)
 
 PILE_SUBSETS = (
     "ArXiv",
@@ -122,13 +121,7 @@ def default_init():
 
 
 class Counts:
-    def __init__(self, n: int, max_ngrams: int = 10_000, out_dir = "./temp"):
-        # Tracks the total number of ngrams processed
-        self.all_ngrams = 0
-
-        # Maximum number of ngrams to keep in memory
-        self.max_ngrams = max_ngrams
-
+    def __init__(self, n: int, out_dir = "./temp"):
         # Size of the ngram being processed
         self.ngram_size = n
 
@@ -137,29 +130,22 @@ class Counts:
 
         # Output dir
         self.out_dir = out_dir
-        self.counts_filepath = f"{self.out_dir}/{n}-gram.jsonl.gz"
+        self.counts_filedir = f"{self.out_dir}"
+        self.counts_extension = ".jsonl.gz"
 
     def add(self, ngram: tuple, subset: str, incr: int = 1):
-
         subset_id = SUBSET2ID[subset]
         self.ngram2counts[ngram]["total_counts"] += incr
         self.ngram2counts[ngram][subset_id] += incr
-        self.all_ngrams += incr
 
-    def head_tail(self):
-        # Ascending order
-        ord_counts = sorted(
+    def sort_desc(self):
+        return sorted(
             self.ngram2counts.items(),
             key=lambda ngram: ngram[1]["total_counts"],
             reverse=True,
         )
 
-        # Keep
-        head = ord_counts[:self.max_ngrams]
-        tail = ord_counts[self.max_ngrams:]
-        return head, tail
-
-    def save(self, head: bool = True):
+    def save(self, filename):
         def __save_aux__(filepath, data, keep_in_memory=True):
             outputs = []
             for ngram, counts in data:
@@ -181,13 +167,8 @@ class Counts:
                     with jsonlines.Writer(f_out) as writer:
                         writer.write_all(outputs)
 
-        if len(self.ngram2counts) < self.max_ngrams:
-            logger.warning(
-                f"Haven't reached max_ngrams yet: {len(self.ngram2counts)} < {self.max_ngrams}"
-            )
-            return
 
-        filepath = self.counts_filepath
+        filepath = f"{self.counts_filepath}
         head, tail = self.head_tail()
 
         # By default save head
@@ -235,27 +216,31 @@ def create_parser():
         help="Model name",
     )
 
-    parser.add_argument("-n", "--ngram-size", type=int, default=3)
+    # Add the SLURM job id
+    parser.add_argument("-j", "--job-id", type=int, required=True)
 
-    parser.add_argument(
-        "-c",
-        "--max-ngrams-in-memory",
-        type=int,
-        default=10_000,
-        help="Number of ngrams to keep in memory at all times",
-    )
+    parser.add_argument("-n", "--ngram-size", type=int, default=3)
 
     parser.add_argument(
         "-dtn",
         "--drop-tail-ngrams",
         type=int,
-        default=300_000,
+        default=1_000_000,
         help="When to drop tail in terms of ngrams in memory.",
+    )
+
+    parser.add_argument(
+        "-ratio",
+        "--char-per-token-ratio",
+        type=int,
+        default=20,
+        help="To avoid tokenizing the whole documents we slice the text using the char-per-token-ratio * ngram-size."
     )
 
     parser.add_argument(
         "-o", "--output-dir", default="./temp", help="Path to a temporary directory."
     )
+
     return parser
 
 
@@ -305,9 +290,6 @@ def setup_logger(path):
     logger.addHandler(c_handler)
     logger.addHandler(f_handler)
 
-    logger.info("HELLOOOOO")
-    logger.error("HELLOOOOO")
-
 
 def index_of_tokens(text: str, tokens: list):
     # inspired by https://docs.python.org/3/library/re.html#finding-all-adverbs-and-their-positions
@@ -327,10 +309,13 @@ if __name__ == "__main__":
     # Create directory
     filename = args.pile_file.rpartition("/")[-1]
     filename = filename.replace(".", "")
-    output_dir = f"{args.output_dir}/{filename}"
+
+
+    output_dir = f"{args.output_dir}/{filename}/{args.ngram_size}-gram"
     os.makedirs(output_dir, exist_ok=True)
 
-    setup_logger(f"{output_dir}/compute_ngrams.log")
+    current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    setup_logger(f"{output_dir}/compute_ngrams_{current_timestamp}_{args.job_id}.log")
     logger.debug(args)
 
     # Tokenization
@@ -339,13 +324,27 @@ if __name__ == "__main__":
     # Data structure with the counts per subset
     counts = Counts(
         n=args.ngram_size,
-        max_ngrams=args.max_ngrams_in_memory,
         out_dir=output_dir,
     )
 
+    # ----------------------------------------------------------------------------
+    # Metadata
+    # ----------------------------------------------------------------------------
+    # Write the tokens we're looking for
+    with open(f"{output_dir}/PILE_subsets_{current_timestamp}.json", "w", encoding="utf-8") as f:
+        json.dump(SUBSET2ID, f, ident=2, sort_keys=True)
+
+    # Write the tokens we're looking for
+    tokens = set(TOKENS_OF_INTEREST)
+    tokens2ids = {t: tokenizer.encode(t) for t in tokens}
+
+    with open(f"{output_dir}/initial_tokens_{current_timestamp}.json", "w", encoding="utf-8") as f:
+        json.dump(tokens2ids, f, indent=2, sort_keys=True)
+
+
     # Heuristic to define the next ngram_size tokens is that they
     # are encoded in terms of 20 characters.
-    SIZE = 20 * args.ngram_size
+    SIZE = args.char_per_token_ratio * args.ngram_size
 
     # Documents
     data_iter = iter(read_file(args.pile_file))
@@ -373,11 +372,10 @@ if __name__ == "__main__":
                 ngram = tokenized_text["input_ids"]
                 counts.add(tuple(ngram), subset, 1)
 
-                if len(counts.ngram2counts) % args.drop_tail_ngrams == 0:
-                    logger.info(f"Num file: {num_file} | #(Unique ngrams): {len(counts.ngram2counts)}.")
-                    logger.debug(f" Dropping tail after {args.drop_tail_ngrams} different tokens have been found")
-                    counts.save(head=True)
-                    logger.debug("Done!")
+            if len(counts.ngram2counts) % args.drop_tail_ngrams == 0:
+                logger.info(f"Num file: {num_file} | #(Unique ngrams): {len(counts.ngram2counts)}.")
+                counts.save(filename=num_file)
+                logger.debug("Done!")
 
         except Exception as e:
             logger.error("Exception occurred", exc_info=True)
