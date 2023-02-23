@@ -36,13 +36,12 @@ class CustomFormatter(logging.Formatter):
 
     def format(self, record):
         log_fmt = self.FORMATS.get(record.levelno)
-        print(record.levelno)
         formatter = logging.Formatter(log_fmt,  datefmt="%d-%b-%y %H:%M:%S")
         return formatter.format(record)
 
 
 # Add whitespace after the token to capture the "individual" words
-TOKENS_OF_INTEREST = list(map(str.lower, map(lambda s: f"{s} ",  (
+TOKENS_OF_INTEREST = (
     # ----------------------------------------------
     # Punctuation
     # ----------------------------------------------
@@ -67,7 +66,7 @@ TOKENS_OF_INTEREST = list(map(str.lower, map(lambda s: f"{s} ",  (
     # ----------------------------------------------
     # pronouns
     # ----------------------------------------------
-    "I", "You", "He", "She", "They", "Them",
+    " I ", "You", " He ", " She ", "They", "Them",
     # ----------------------------------------------
     # possessive pronouns
     # ----------------------------------------------
@@ -82,8 +81,8 @@ TOKENS_OF_INTEREST = list(map(str.lower, map(lambda s: f"{s} ",  (
 
     "negative", "positive", "great", "bad", "good", "terrible", "neutral",
     # Religion
-    # "christian", "jewish", "muslim",
-))))
+    "christian", "jewish", "muslim",
+)
 
 PILE_SUBSETS = (
     "ArXiv",
@@ -132,17 +131,20 @@ class Counts:
         self.out_dir = out_dir
         self.counts_filedir = f"{self.out_dir}"
         self.counts_extension = ".jsonl.gz"
+        self.last_filepath = None
 
-    def add(self, ngram: tuple, subset: str, incr: int = 1):
+    def add(self, prev_token: list, ngram: list, subset: str, incr: int = 1):
         subset_id = SUBSET2ID[subset]
+
+        ngram = tuple(prev_token + ngram)
+        self.ngram2counts[ngram]["prev_token"] = prev_token
         self.ngram2counts[ngram]["total_counts"] += incr
         self.ngram2counts[ngram][subset_id] += incr
 
     def sort_desc(self):
         return sorted(
             self.ngram2counts.items(),
-            key=lambda ngram: ngram[1]["total_counts"], # ngram[1] gets the values of ngrams2counts
-            reverse=True,
+            key=lambda ngram: tuple(reversed(ngram[1]["prev_token"])), # ngram[1] gets the values of ngrams2counts
         )
 
     def save(self, filename: str):
@@ -157,25 +159,31 @@ class Counts:
                 result.update(counts)
                 outputs.append(result)
 
-                # Remove from memory
-                if not keep_in_memory:
-                    self.ngram2counts.pop(ngram)
-
             if len(outputs) > 0:
                 logger.info(f"Logging counts to file: {filepath}")
                 with gzip.open(filepath, "wb") as f_out:
                     with jsonlines.Writer(f_out) as writer:
                         writer.write_all(outputs)
 
+            if not keep_in_memory:
+                self.ngram2counts = defaultdict(default_init)
+
 
         filepath = f"{self.counts_filedir}/{filename}{self.counts_extension}"
         data = self.sort_desc()
 
-        logger.info("Before: dropping", len(self.ngram2counts), "{self.all_ngrams}")
+        logger.info(f"Before dropping: {len(self.ngram2counts)}")
         __save_aux__(filepath, data, keep_in_memory=False)
-        logger.info("After: dropping", len(self.ngram2counts), "{self.all_ngrams}")
+        logger.info(f"After dropping: {len(self.ngram2counts)}")
+
+        # if self.last_filepath is not None and os.path.exists(filepath):
+        #     logger.warn(f"Removing last filepath: {self.last_filepath}")
+        #     os.remove(self.last_filepath)
+        #     self.last_filepath = filepath
+        self.last_filepath = filepath
 
         assert len(self.ngram2counts) == 0, f"Got {len(self.ngram2counts)} but expected 0"
+
 
 
 def read_file(filepath: str):
@@ -259,14 +267,14 @@ def load_tokenizer(model_name: str, num_tokens) -> callable:
         max_length=num_tokens,
         truncation=True,
         padding="max_length",
-    )
+    ), tokenizer.pad_token_id
 
 
 def setup_logger(path):
     global logger
 
     logger =  logging.getLogger()
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
     # Create handlers
     c_handler = logging.StreamHandler(sys.stdout)
     c_handler.setLevel(logging.INFO)
@@ -286,12 +294,20 @@ def setup_logger(path):
 def index_of_tokens(text: str, tokens: list, end=True):
     # inspired by https://docs.python.org/3/library/re.html#finding-all-adverbs-and-their-positions
     import re
-    text = text.lower()
+    text_lower = text.lower()
+
+    # add word boundaries to make sure it only matches the words
+    tokens = list(map(lambda x: r"(\b" + x.lower() + r"\b)", tokens))
     regex_expr = "|".join(tokens)
 
-    for m in re.finditer(regex_expr, text):
+    for m in re.finditer(regex_expr, text_lower):
+        m_start = max(0, m.start()-1) # capture's whether it's a beginning of a word
+        # or in the middle of a word.
+        orig_token = text[m_start:m.end()]
+
         # return first/last index of the token and the token itself
-        yield m.end() if end else m.start(), m.group(0)
+        # print("index_of_tokens -->", m.end() if end else m_start, orig_token, m.group(0))
+        yield m.end() if end else m_start, orig_token
 
 
 if __name__ == "__main__":
@@ -307,10 +323,10 @@ if __name__ == "__main__":
 
     current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     setup_logger(f"{output_dir}/compute_ngrams_{current_timestamp}_{args.job_id}.log")
-    logger.debug(args)
+    logger.info(args)
 
     # Tokenization
-    tokenizer: callable = load_tokenizer(args.model_name, args.ngram_size)
+    tokenizer, pad_token_id = load_tokenizer(args.model_name, args.ngram_size)
 
     # Data structure with the counts per subset
     counts = Counts(
@@ -323,14 +339,14 @@ if __name__ == "__main__":
     # ----------------------------------------------------------------------------
     # Write the tokens we're looking for
     with open(f"{output_dir}/PILE_subsets_{current_timestamp}.json", "w", encoding="utf-8") as f:
-        json.dump(SUBSET2ID, f, ident=2, sort_keys=True)
+        json.dump(SUBSET2ID, f, sort_keys=True)
 
     # Write the tokens we're looking for
     tokens = set(TOKENS_OF_INTEREST)
-    tokens2ids = {t: tokenizer.encode(t) for t in tokens}
+    tokens2ids = {t: tokenizer(t)["input_ids"] for t in tokens}
 
     with open(f"{output_dir}/initial_tokens_{current_timestamp}.json", "w", encoding="utf-8") as f:
-        json.dump(tokens2ids, f, indent=2, sort_keys=True)
+        json.dump(tokens2ids, f, sort_keys=True)
 
 
     # ----------------------------------------------------------------------------
@@ -340,23 +356,6 @@ if __name__ == "__main__":
 
     # Let us register a function that will run before aborting the program
     num_file = 0
-
-    import signal
-
-    def clean():
-        logger.error("Received a signal. Aborting...")
-        logger.warn(f"Processing file {output_dir} and stopped at num file {num_file}")
-
-        with open(f"{output_dir}/aborted_{num_file}.txt", "w") as f:
-            f.write(f"{num_file}")
-
-        logger.warn("Writing current state of ngram counts before terminating")
-        counts.save(num_file)
-        logger.info("Terminating...")
-        os._exit(0)
-
-    for sig in (signal.SIGKILL, signal.SIGINT, signal.SIGABRT):
-        signal.signal(clean, sig)
 
     # Documents
     data_iter = iter(read_file(args.pile_file))
@@ -376,9 +375,9 @@ if __name__ == "__main__":
             # document, we will not add it, which means we will not corrupt the counts).
             # We can simply restart from this document without risking overcounting.
             doc_counts = []
-            for text_id, text in index_of_tokens(text, TOKENS_OF_INTEREST, end=True):
-
-                token = tokenizer(text)["input_ids"]
+            for text_id, token_text in index_of_tokens(text, TOKENS_OF_INTEREST, end=True):
+                token = tokenizer(token_text)["input_ids"]
+                token = [t for t in token if t != pad_token_id]
 
                 # Collect only the n-gram after the token of interest
                 # This ensures we always get 6, regardless of the number of tokens of token of interest
@@ -387,18 +386,21 @@ if __name__ == "__main__":
                 )
 
                 ngram = tokenized_text["input_ids"]
-                doc_counts.append((tuple(token + ngram), subset))
+                ngram = [t for t in ngram if t != pad_token_id]
+                doc_counts.append((list(token), list(ngram), subset))
 
-            for ngram, subset in doc_counts:
-                counts.add(ngram, subset, 1)
+                print("list of ngrams -->", token_text, token, ngram)
+            for prev_token, ngram, subset in doc_counts:
+                counts.add(prev_token, ngram, subset, 1)
 
             if len(counts.ngram2counts) % args.drop_tail_ngrams == 0:
                 logger.info(f"Num file: {num_file} | #(Unique ngrams): {len(counts.ngram2counts)}.")
                 counts.save(filename=num_file)
-                logger.debug("Done!")
+                logger.info("Done!")
 
+            break
         except Exception as e:
             logger.error("Exception occurred in file {num_file}", exc_info=True)
 
     logger.info("Saving final counts...")
-    counts.save()
+    counts.save("final")
