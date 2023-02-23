@@ -283,15 +283,15 @@ def setup_logger(path):
     logger.addHandler(f_handler)
 
 
-def index_of_tokens(text: str, tokens: list):
+def index_of_tokens(text: str, tokens: list, end=True):
     # inspired by https://docs.python.org/3/library/re.html#finding-all-adverbs-and-their-positions
     import re
     text = text.lower()
     regex_expr = "|".join(tokens)
 
     for m in re.finditer(regex_expr, text):
-        # return first index of the token and the token itself
-        yield m.start(), m.group(0)
+        # return first/last index of the token and the token itself
+        yield m.end() if end else m.start(), m.group(0)
 
 
 if __name__ == "__main__":
@@ -347,23 +347,23 @@ if __name__ == "__main__":
         num_file, doc = data
 
         try:
-
             processed_docs += 1
             subset = doc["meta"]["pile_set_name"]
 
             # Process text
             text = doc["text"]
 
-            for text_id, token in index_of_tokens(text, TOKENS_OF_INTEREST):
-                text_id = max(0, text_id-1) # to capture the idea of whether there's a space or not
-                # Tokenize text
+            for text_id, text in index_of_tokens(text, TOKENS_OF_INTEREST, end=True):
+                token = tokenizer(text)["input_ids"]
+
+                # Collect only the n-gram after the token of interest
+                # This ensures we always get 6, regardless of the number of tokens of token of interest
                 tokenized_text = tokenizer(
                     text[text_id:text_id+SIZE]
                 )
 
-                # Collect only the n-gram after the punctuation
                 ngram = tokenized_text["input_ids"]
-                counts.add(tuple(ngram), subset, 1)
+                counts.add(tuple(token + ngram), subset, 1)
 
             if len(counts.ngram2counts) % args.drop_tail_ngrams == 0:
                 logger.info(f"Num file: {num_file} | #(Unique ngrams): {len(counts.ngram2counts)}.")
