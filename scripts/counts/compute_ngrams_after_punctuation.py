@@ -266,10 +266,10 @@ def setup_logger(path):
     global logger
 
     logger =  logging.getLogger()
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     # Create handlers
     c_handler = logging.StreamHandler(sys.stdout)
-    c_handler.setLevel(logging.DEBUG)
+    c_handler.setLevel(logging.INFO)
     c_handler.setFormatter(CustomFormatter())
 
     f_handler = logging.FileHandler(path)
@@ -372,7 +372,12 @@ if __name__ == "__main__":
             # Process text
             text = doc["text"]
 
+            # Buffer (if an error occurs in the middle of processing the tokens for a
+            # document, we will not add it, which means we will not corrupt the counts).
+            # We can simply restart from this document without risking overcounting.
+            doc_counts = []
             for text_id, text in index_of_tokens(text, TOKENS_OF_INTEREST, end=True):
+
                 token = tokenizer(text)["input_ids"]
 
                 # Collect only the n-gram after the token of interest
@@ -382,7 +387,10 @@ if __name__ == "__main__":
                 )
 
                 ngram = tokenized_text["input_ids"]
-                counts.add(tuple(token + ngram), subset, 1)
+                doc_counts.append((tuple(token + ngram), subset))
+
+            for ngram, subset in doc_counts:
+                counts.add(ngram, subset, 1)
 
             if len(counts.ngram2counts) % args.drop_tail_ngrams == 0:
                 logger.info(f"Num file: {num_file} | #(Unique ngrams): {len(counts.ngram2counts)}.")
@@ -390,7 +398,7 @@ if __name__ == "__main__":
                 logger.debug("Done!")
 
         except Exception as e:
-            logger.error("Exception occurred", exc_info=True)
+            logger.error("Exception occurred in file {num_file}", exc_info=True)
 
     logger.info("Saving final counts...")
     counts.save()
