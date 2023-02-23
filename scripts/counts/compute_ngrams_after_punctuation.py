@@ -141,11 +141,11 @@ class Counts:
     def sort_desc(self):
         return sorted(
             self.ngram2counts.items(),
-            key=lambda ngram: ngram[1]["total_counts"],
+            key=lambda ngram: ngram[1]["total_counts"], # ngram[1] gets the values of ngrams2counts
             reverse=True,
         )
 
-    def save(self, filename):
+    def save(self, filename: str):
         def __save_aux__(filepath, data, keep_in_memory=True):
             outputs = []
             for ngram, counts in data:
@@ -168,22 +168,14 @@ class Counts:
                         writer.write_all(outputs)
 
 
-        filepath = f"{self.counts_filepath}
-        head, tail = self.head_tail()
+        filepath = f"{self.counts_filedir}/{filename}{self.counts_extension}"
+        data = self.sort_desc()
 
-        # By default save head
-        if head:
-            __save_aux__(filepath, head, keep_in_memory=True)
+        logger.info("Before: dropping", len(self.ngram2counts), "{self.all_ngrams}")
+        __save_aux__(filepath, data, keep_in_memory=False)
+        logger.info("After: dropping", len(self.ngram2counts), "{self.all_ngrams}")
 
-        # keep an idea of how many ngrams have been processed and drop tail
-        tail_filepath = f"{filepath}.tail_at_{self.all_ngrams}.gz"
-        print("Before: dropping", len(self.ngram2counts), "{self.all_ngrams}")
-        __save_aux__(tail_filepath, tail, keep_in_memory=False)
-        print("After: dropping", len(self.ngram2counts), "{self.all_ngrams}")
-
-        assert (
-            len(self.ngram2counts) == self.max_ngrams
-        ), f"Total ngrams {len(self.ngram2counts)} but expected {self.max_ngrams} after save."
+        assert len(self.ngram2counts) == 0, f"Got {len(self.ngram2counts)} but expected 0"
 
 
 def read_file(filepath: str):
@@ -328,7 +320,7 @@ if __name__ == "__main__":
     )
 
     # ----------------------------------------------------------------------------
-    # Metadata
+    #                               Metadata
     # ----------------------------------------------------------------------------
     # Write the tokens we're looking for
     with open(f"{output_dir}/PILE_subsets_{current_timestamp}.json", "w", encoding="utf-8") as f:
@@ -342,6 +334,7 @@ if __name__ == "__main__":
         json.dump(tokens2ids, f, indent=2, sort_keys=True)
 
 
+    # ----------------------------------------------------------------------------
     # Heuristic to define the next ngram_size tokens is that they
     # are encoded in terms of 20 characters.
     SIZE = args.char_per_token_ratio * args.ngram_size
