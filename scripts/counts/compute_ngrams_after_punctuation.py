@@ -302,7 +302,6 @@ if __name__ == "__main__":
     filename = args.pile_file.rpartition("/")[-1]
     filename = filename.replace(".", "")
 
-
     output_dir = f"{args.output_dir}/{filename}/{args.ngram_size}-gram"
     os.makedirs(output_dir, exist_ok=True)
 
@@ -338,6 +337,26 @@ if __name__ == "__main__":
     # Heuristic to define the next ngram_size tokens is that they
     # are encoded in terms of 20 characters.
     SIZE = args.char_per_token_ratio * args.ngram_size
+
+    # Let us register a function that will run before aborting the program
+    num_file = 0
+
+    import signal
+
+    def clean():
+        logger.error("Received a signal. Aborting...")
+        logger.warn(f"Processing file {output_dir} and stopped at num file {num_file}")
+
+        with open(f"{output_dir}/aborted_{num_file}.txt", "w") as f:
+            f.write(f"{num_file}")
+
+        logger.warn("Writing current state of ngram counts before terminating")
+        counts.save(num_file)
+        logger.info("Terminating...")
+        os._exit(0)
+
+    for sig in (signal.SIGKILL, signal.SIGINT, signal.SIGABRT):
+        signal.signal(clean, sig)
 
     # Documents
     data_iter = iter(read_file(args.pile_file))
