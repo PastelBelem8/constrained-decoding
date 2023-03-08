@@ -149,30 +149,98 @@ class NaiveSampler(BaseSampler):
             logits=all_logits,
         )
 
-    def _sample_marginal(self, sampling_out: SamplingOutput, **kwargs) -> SamplingOutput:
-        assert sampling_out.description == "NaiveSampler._sample_not_occur"
-        assert len(sampling_out.probs) == sampling_out.samples.shape[1]
+    def _sample_marginal(self,
+        input_ids,
+        terms_ids,
+        max_num_tokens,
+        model_kwargs,
+        return_logits=False,
+    ) -> SamplingOutput:
 
         # Marginal probability concerns the likelihood of choosing a term
         # at random from decoding step k and the term belonging to set C.
+        input_ids = input_ids.to(self.device)
+        terms_ids = terms_ids.to(self.device)
+        model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
+
+        n_samples, history_length = input_ids.shape
+        samples = input_ids.clone()
+        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(
+            self.device
+        )
+
+        all_logits = []
+        for i in range(max_num_tokens):
+            model_inputs = self.model.prepare_inputs_for_generation(
+                samples, **model_kwargs, device=self.device
+            )
+            model_outputs = self.model.forward(**model_inputs)
+            # model logits: (n_samples, current_len, vocab_size)
+            # Because we're interested in the next tokens [-1], we restrict it to size
+            # (n_samples, vocab_size)
+            logits = model_outputs.logits[:, -1, :]
+
+            # ---------------------------------------------------------------------
+            # 2. Sample next token based on proposal distribution
+            # ---------------------------------------------------------------------
+            # Categorical.sample() returns a sampled index per each row.
+            # samples are of shape (n_samples, 1)
+            next_tokens = (
+                torch.distributions.Categorical(logits=logits).sample().unsqueeze(-1)
+            ).to(self.device)
+
+            # ---------------------------------------------------------------------
+            # 4. Handle EOS sequences:
+            # ---------------------------------------------------------------------
+            # If sequence is finished, ignore sampled token and use padding.
+            next_tokens = torch.where(
+                unfinished_sequences,
+                next_tokens,
+                self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+            )
+
+            # Update the mask when you identify end of sequence tokens
+            if self.tokenizer.eos_token_id is not None:
+                # Set current unfinished to 1 if next token is not EOS
+                unfinished_sequences = torch.logical_and(
+                    unfinished_sequences, next_tokens != self.tokenizer.eos_token_id
+                )
+
+            # 5. Update intermediate artifacts
+            samples = torch.cat([samples, next_tokens], dim=-1)
+            # ^Note: decoder-architectures will need the whole sequence at decoding time
+
+            self.model._update_model_kwargs_for_generation(
+                model_outputs,
+                model_kwargs,
+                is_encoder_decoder=self.model.config.is_encoder_decoder,
+            )
+            if return_logits:
+                all_logits.append(F.log_softmax(logits, dim=-1).cpu().detach().numpy())
+
+            # Stop whenever all sequences are finished (unfinished==0)
+            if (unfinished_sequences == 0).all():
+                print(f"Sequences finished prematurely ({i+1}/{max_num_tokens})!")
+                break
 
         # We can re-use samples from before to compute this
         samples_term_mask = np.isin(
-            sampling_out.samples,
-            test_elements=sampling_out.terms_ids,
+            samples[:, history_length:].cpu().detach().numpy(),
+            test_elements=terms_ids.cpu().detach().numpy(),
         )
-        num_tokens = len(sampling_out.probs)
+
+        num_tokens = samples[:, history_length:].shape[-1]
 
         # For each decoding step k, if any of the terms in C
         # occurs, then mark it has 1
-        marginals = [samples_term_mask[:, k] for k in range(num_tokens)]
+        marginals = [samples_term_mask[:, k].reshape(-1, 1) for k in range(num_tokens)]
 
         return SamplingOutput(
             probs=marginals,
-            samples=sampling_out.samples,
-            terms_ids=sampling_out.terms_ids,
+            samples=samples[:, history_length:].cpu().detach().numpy(),
+            terms_ids=terms_ids.cpu().detach().numpy(),
             desc="NaiveSampler._sample_marginal",
-            logits=sampling_out.logits,
+            logits=all_logits,
         )
 
     def estimate_hit_probability(self, sampling_out: SamplingOutput) -> SamplingOutput:
@@ -214,3 +282,31 @@ class NaiveSampler(BaseSampler):
 
     def estimate_hit_probability_A_before_B(*args, **kwargs):
         raise NotImplemented
+
+
+
+if __name__ == "__main__":
+    MODEL_NAME = "EleutherAI/gpt-neo-125M"
+
+    sampler_mc = NaiveSampler(MODEL_NAME, device="cuda")
+    NUM_SEQUENCES = 128
+
+    estimate_marginals_kwargs = {
+        "input_str": "Once upon a",
+        "terms": " time",
+        "num_sequences": NUM_SEQUENCES,
+        "batch_size": 64,
+        "max_num_tokens": 10,
+        "seed": 97163,
+    }
+
+    results_mc = sampler_mc.batch_estimate_marginals(**estimate_marginals_kwargs)
+    print(results_mc.samples.shape)
+    margs_mc_mean, margs_mc_std = sampler_mc.compute_confidence_intervals(results_mc.probs, width=2)
+
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    width = 2
+    ax = sns.lineplot(x=np.arange(len(margs_mc_mean)), y=margs_mc_mean, label="Importance Sampling")
+    cis = [(mean - width * std, mean + width * std) for mean, std in zip(margs_mc_mean, margs_mc_std)]
+    ax.fill_between(np.arange(len(margs_mc_mean)), *zip(*cis), alpha=0.5)
