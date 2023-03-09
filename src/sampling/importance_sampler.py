@@ -226,20 +226,10 @@ class ImportanceSampler(BaseSampler):
             # Select next token logits: (n_samples, vocab_size)
             logits = logits[:, -1, :]
 
-            # ---------------------------------------------------------------------
-            # 1. Sample next token based on distribution
-            # ---------------------------------------------------------------------
-            # Categorical.sample() returns a sampled index per each row.
-            # samples is of shape (n_samples, 1)
-            next_tokens = (
-                torch.distributions.Categorical(logits=logits).sample().unsqueeze(-1)
-            ).to(self.device)
-
-            # ---------------------------------------------------------------------
-            # 2. Accumulate log_probabilities
-            # ---------------------------------------------------------------------
+            # ----------------------------------------------------------------------
+            # 1. Compute marginal probabilities
+            # ----------------------------------------------------------------------
             model_prob = F.softmax(logits, dim=-1)
-            # Accumulate the model probability of any of the terms in terms_ids
             model_terms_prob = model_prob[..., terms_ids].sum(dim=-1).unsqueeze(-1)
             # Note: The probability above is the conditional probability of observing
             # any of the terms_ids given all the tokens generated so far. However,
@@ -248,14 +238,18 @@ class ImportanceSampler(BaseSampler):
             current_seq_prob = intermediate_model_log_prob + torch.log(model_terms_prob)
             marginals_prob.append(torch.exp(current_seq_prob).cpu().detach().numpy())
 
+            # ---------------------------------------------------------------------
+            # 2. Sample next token based on distribution
+            # ---------------------------------------------------------------------
+            # Categorical.sample() returns a sampled index per each row.
+            # samples is of shape (n_samples, 1)
+            next_tokens = (torch.distributions.Categorical(logits=logits).sample().unsqueeze(-1)).to(self.device)
+
             # Now that we have the marginals, we will update the actual sequence
             # probability (when considering the selected tokens):
             # model_prob contains the probability of the selected tokens
             model_prob = torch.gather(model_prob, dim=-1, index=next_tokens)
 
-            # ---------------------------------------------------------------------
-            # 3. Handle EOS sequences:
-            # ---------------------------------------------------------------------
             # - If sequence is finished, ignore sampled token and use padding.
             next_tokens = torch.where(
                 unfinished_sequences,
@@ -408,3 +402,27 @@ class ImportanceSampler(BaseSampler):
                 total_prob.append((miss_prob[i - 1] * probs_occur).mean().item())
 
         return total_prob
+
+    def _sample_co_occcurrence(self, *args, **kwargs) -> SamplingOutput:
+        raise NotImplementedError
+
+
+
+if __name__ == "__main__":
+    MODEL_NAME = "EleutherAI/gpt-neo-125M"
+
+    sampler_is = ImportanceSampler(MODEL_NAME, device="cuda")
+    NUM_SEQUENCES = 128
+
+    estimate_marginals_kwargs = {
+    "input_str": "Once upon a",
+    "terms": " time",
+    "num_sequences": NUM_SEQUENCES,
+    "batch_size": 32,
+    "max_num_tokens": 4,
+    "seed": 97163,
+}
+
+    results_is = sampler_is.batch_estimate_marginals(**estimate_marginals_kwargs)
+    print(results_is.samples.shape)
+    margs_is_mean, margs_is_std = sampler_is.compute_confidence_intervals(results_is.probs, width=2)

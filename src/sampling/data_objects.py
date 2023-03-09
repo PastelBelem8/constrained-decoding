@@ -59,3 +59,37 @@ class SamplingOutput:
             desc=self.description,
             logits=new_logits,
         )
+
+
+class SimpleSamplingOutput(SamplingOutput):
+    def __add__(self, output):
+
+        new_probs = []
+        new_logits = []
+
+        n = min(len(self.probs), len(output.probs))
+        max_seq_size = max(len(self.probs), len(output.probs))
+
+        for i in range(n):
+            new_probs.append(np.vstack((self.probs[i], output.probs[i])))
+            # new_samples.append(torch.vstack((self.samples[i], output.samples[i])))
+
+            if len(self.logits) > 0:
+                new_logits.append(np.vstack((self.logits[i], output.logits[i])))
+
+        if max_seq_size - n > 0:
+            # TODO
+            # Need to handle new_probs (set them to 1 -- indicating seqs are finished)
+            # Need to handle logits (set them to 1 -- uniform distribution)
+            # Need to handle samples:
+            raise NotImplemented
+        else:
+            new_samples = np.vstack((self.samples, output.samples))
+
+        return SamplingOutput(
+            probs=new_probs,
+            samples=new_samples,
+            terms_ids=self.terms_ids,
+            desc=self.description,
+            logits=new_logits,
+        )

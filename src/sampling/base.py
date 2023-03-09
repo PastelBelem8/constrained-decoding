@@ -65,6 +65,7 @@ class BaseSampler(ABC):
         max_num_tokens: int,
         seed: int,
         add_special_tokens: bool = False,
+        add_first_word_tokens: bool = False,
         **kwargs,
     ) -> SamplingOutput:
         """Estimates the probability that any of the terms occurs in any of
@@ -88,6 +89,12 @@ class BaseSampler(ABC):
         terms_ids = self.tokenizer(
             terms, add_special_tokens=add_special_tokens
         ).input_ids
+
+
+        if add_first_word_tokens:
+            terms_ids += self.tokenizer(
+                terms.split(), add_special_tokens=add_special_tokens
+            ).input_ids
 
         history = create_history(num_sequences, input_ids, bos_token_id)
         sampling_specific_kwargs = create_model_kwargs(
@@ -172,7 +179,77 @@ class BaseSampler(ABC):
         -----
         terms_A and terms_B should be non-overlapping.
         """
-        raise NotImplemented
+        raise NotImplementedError
+
+    @abstractmethod
+    def _sample_co_occcurrence(self, *args, **kwargs) -> SamplingOutput:
+        raise NotImplementedError
+
+    def estimate_co_occurrence(
+        self, terms_A: str, terms_B: str, input_str: Optional[str], num_sequences, max_num_tokens, seed: int, add_special_tokens: bool=False, **kwargs
+    ) -> SamplingOutput:
+        """Estimates the probability that any term in terms_A occurs before
+        any of the terms in B when conditioned on the history.
+        """
+        set_seed(seed)
+
+        bos_token_id = (
+            self.tokenizer.bos_token_id or self.model.config.decoder_start_token_id
+        )
+
+        input_ids = (
+            self.tokenizer(
+                input_str, return_tensors="pt", add_special_tokens=add_special_tokens
+            ).input_ids
+            if input_str is not None
+            else None
+        )
+
+        terms_A_ids = self.tokenizer(
+            terms_A, add_special_tokens=add_special_tokens, return_tensors="pt"
+        ).input_ids.squeeze()
+
+        terms_B_ids = self.tokenizer(
+            terms_B, add_special_tokens=add_special_tokens, return_tensors="pt"
+        ).input_ids.squeeze()
+
+        history = create_history(num_sequences, input_ids, bos_token_id)
+        sampling_specific_kwargs = create_model_kwargs(
+            history, self.model, self.tokenizer
+        )
+
+        results = self._sample_co_occcurrence(
+            terms_ids_A=terms_A_ids,
+            terms_ids_B=terms_B_ids,
+            max_num_tokens=max_num_tokens,
+            **sampling_specific_kwargs,
+            **kwargs,
+        )
+
+        return results
+
+    def batch_estimate_co_occurrence(
+        self,
+        input_str: str,
+        terms_A: str,
+        terms_B: str,
+        num_sequences: int,
+        max_num_tokens: int,
+        seed: int,
+        add_special_tokens: bool = False,
+        **kwargs,
+    ) -> SamplingOutput:
+        return self._batch_estimate(
+            self.estimate_co_occurrence,
+            input_str=input_str,
+            terms_A=terms_A,
+            terms_B=terms_B,
+            num_sequences=num_sequences,
+            max_num_tokens=max_num_tokens,
+            seed=seed,
+            add_special_tokens=add_special_tokens,
+            **kwargs,
+        )
 
     def _batch_estimate(
         self, fn: callable, num_sequences: int, seed: int, batch_size=32, **kwargs
@@ -202,6 +279,7 @@ class BaseSampler(ABC):
         max_num_tokens: int,
         seed: int,
         add_special_tokens: bool = False,
+        add_first_word_tokens: bool = False,
         **kwargs,
     ) -> SamplingOutput:
         return self._batch_estimate(
@@ -212,6 +290,7 @@ class BaseSampler(ABC):
             max_num_tokens=max_num_tokens,
             seed=seed,
             add_special_tokens=add_special_tokens,
+            add_first_word_tokens=add_first_word_tokens,
             **kwargs,
         )
 
@@ -244,6 +323,7 @@ class BaseSampler(ABC):
         max_num_tokens: int,
         seed: int,
         add_special_tokens: bool = False,
+        add_first_word_tokens: bool = False,
         **kwargs,
     ) -> SamplingOutput:
         """Estimates the probability that any of the terms occurs in any of
@@ -259,7 +339,7 @@ class BaseSampler(ABC):
             max_num_tokens=max_num_tokens,
             seed=seed,
             add_special_tokens=add_special_tokens,
-            **kwargs
+            **kwargs,
         )
 
     def estimate_not_occurring(

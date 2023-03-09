@@ -1,9 +1,59 @@
-from sampling.data_objects import SamplingOutput
+from sampling.data_objects import SamplingOutput, SimpleSamplingOutput
 from sampling.base import BaseSampler
+from itertools import product
 
 import torch
 import torch.nn.functional as F
 import numpy as np
+
+
+def search_sequence_numpy(arr: np.array, seq: np.array):
+    """ Find sequence in an array using NumPy only.
+
+    Parameters
+    ----------
+    arr    : input 1D array
+    seq    : input 1D array
+
+    Output
+    ------
+    Output : 1D Array of indices in the input array that satisfy the
+    matching of input sequence in the input array.
+    In case of no match, an empty list is returned.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> a = np.array([
+    ... [1, 2, 3, 4],
+    ... [3, 4, 3, 4],
+    ... [3, 3, 3, 3]
+    ...])
+    >>> target_seq = np.array([3, 4])
+    >>> search_sequence_numpy(a[0,:], target_seq)
+    ... [array([2, 3])]
+    >>> search_sequence_numpy(a[1,:], target_seq)
+    ... [array([0, 1]), array([2, 3])]
+    >>> search_sequence_numpy(a[2,:], target_seq)
+    ... []
+    """
+    # Store sizes of input array and sequence
+    Na, Nseq = arr.size, seq.size
+
+    # Range of sequence
+    r_seq = np.arange(Nseq)
+
+    # Create a 2D array of sliding indices across the entire length of input array.
+    # Match up with the input sequence & get the matching starting indices.
+    M = (arr[np.arange(Na-Nseq+1)[:,None] + r_seq] == seq).all(1)
+
+    # Get the range of those indices as final output
+    if M.any() >0:
+        ids = np.where(np.convolve(M,np.ones((Nseq),dtype=int))>0)[0]
+        ids = [ids[i:i+Nseq] for i in range(0, Na, Nseq) if len(ids[i:i+Nseq]) > 0]
+        return ids
+    else:
+        return []         # No match found
 
 
 class NaiveSampler(BaseSampler):
@@ -283,7 +333,114 @@ class NaiveSampler(BaseSampler):
     def estimate_hit_probability_A_before_B(*args, **kwargs):
         raise NotImplemented
 
+    def _sample_co_occcurrence(self,
+        input_ids,
+        terms_ids_A,
+        terms_ids_B,
+        max_num_tokens,
+        model_kwargs,
+        return_logits=False,
+        ):
 
+        input_ids = input_ids.to(self.device)
+        model_kwargs = {k: v.to(self.device) for k, v in model_kwargs.items()}
+
+        n_samples, history_length = input_ids.shape
+        samples = input_ids.clone()
+        unfinished_sequences = torch.ones((n_samples, 1), dtype=torch.bool).to(
+            self.device
+        )
+
+        all_logits = []
+        for i in range(max_num_tokens):
+            model_inputs = self.model.prepare_inputs_for_generation(
+                samples, **model_kwargs, device=self.device
+            )
+            model_outputs = self.model.forward(**model_inputs)
+            # model logits: (n_samples, current_len, vocab_size)
+            # Because we're interested in the next tokens [-1], we restrict it to size
+            # (n_samples, vocab_size)
+            logits = model_outputs.logits[:, -1, :]
+
+            # ---------------------------------------------------------------------
+            # 2. Sample next token based on proposal distribution
+            # ---------------------------------------------------------------------
+            # Categorical.sample() returns a sampled index per each row.
+            # samples are of shape (n_samples, 1)
+            next_tokens = (
+                torch.distributions.Categorical(logits=logits).sample().unsqueeze(-1)
+            ).to(self.device)
+
+            # ---------------------------------------------------------------------
+            # 4. Handle EOS sequences:
+            # ---------------------------------------------------------------------
+            # If sequence is finished, ignore sampled token and use padding.
+            next_tokens = torch.where(
+                unfinished_sequences,
+                next_tokens,
+                self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+            )
+
+            # Update the mask when you identify end of sequence tokens
+            if self.tokenizer.eos_token_id is not None:
+                # Set current unfinished to 1 if next token is not EOS
+                unfinished_sequences = torch.logical_and(
+                    unfinished_sequences, next_tokens != self.tokenizer.eos_token_id
+                )
+
+            # 5. Update intermediate artifacts
+            samples = torch.cat([samples, next_tokens], dim=-1)
+            # ^Note: decoder-architectures will need the whole sequence at decoding time
+
+            self.model._update_model_kwargs_for_generation(
+                model_outputs,
+                model_kwargs,
+                is_encoder_decoder=self.model.config.is_encoder_decoder,
+            )
+            if return_logits:
+                all_logits.append(F.log_softmax(logits, dim=-1).cpu().detach().numpy())
+
+            # Stop whenever all sequences are finished (unfinished==0)
+            if (unfinished_sequences == 0).all():
+                print(f"Sequences finished prematurely ({i+1}/{max_num_tokens})!")
+                break
+
+        # ----------------------------------------------------------
+        # Compute co-ocurrences
+        # ----------------------------------------------------------
+        terms_ids_A = terms_ids_A.cpu().detach().numpy().ravel()
+        terms_ids_B = terms_ids_B.cpu().detach().numpy().ravel()
+        # print(type(terms_ids_A), terms_ids_A)
+        # print(type(terms_ids_B), terms_ids_B)
+
+        total = []
+        for i in range(n_samples):
+            total.append(0)
+            row = samples[i,:].cpu().detach().numpy()
+
+            # Compute matches of terms ids in A
+            matches_A = search_sequence_numpy(row, terms_ids_A)
+            if len(matches_A) == 0: continue
+
+            # Compute matches of terms ids in B
+            matches_B = search_sequence_numpy(row, terms_ids_B)
+            if len(matches_B) == 0: continue
+
+            # If some matches occur for both terms, then we must check
+            # whether they are not the same
+            for match_A, match_B in product(matches_A, matches_B):
+                n_match = len(np.unique(np.concatenate((match_A, match_B))))
+                if n_match == len(terms_ids_A) + len(terms_ids_B):
+                    total[-1] = 1
+                    break
+
+        return SimpleSamplingOutput(
+            probs=np.array(total),
+            samples=samples[:, history_length:].cpu().detach().numpy(),
+            terms_ids=[],
+            desc="NaiveSampler._sample_co_occcurrence",
+            logits=all_logits,
+        )
 
 if __name__ == "__main__":
     MODEL_NAME = "EleutherAI/gpt-neo-125M"
@@ -303,10 +460,3 @@ if __name__ == "__main__":
     results_mc = sampler_mc.batch_estimate_marginals(**estimate_marginals_kwargs)
     print(results_mc.samples.shape)
     margs_mc_mean, margs_mc_std = sampler_mc.compute_confidence_intervals(results_mc.probs, width=2)
-
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    width = 2
-    ax = sns.lineplot(x=np.arange(len(margs_mc_mean)), y=margs_mc_mean, label="Importance Sampling")
-    cis = [(mean - width * std, mean + width * std) for mean, std in zip(margs_mc_mean, margs_mc_std)]
-    ax.fill_between(np.arange(len(margs_mc_mean)), *zip(*cis), alpha=0.5)
