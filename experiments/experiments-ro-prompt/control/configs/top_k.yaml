@@ -1,0 +1,11 @@
+decoding:
+  method: top-k
+  params: [2, 10, 40, 100]
+  max_new_tokens: 100
+  
+sampling:
+  seed: 8731
+  num_sequences: 131_072  # (64 * 2048, 32 * 4096)
+  batch_size: 128
+  dump_freq: 8192
+  output_dir: /extra/ucinlp1/cbelem/experiment-ro-prompts/generations/uncond
