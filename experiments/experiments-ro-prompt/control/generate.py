@@ -74,13 +74,13 @@ def generate(
     return seqs, seq_scores, seq_trans_scores, seq_entr_scores
 
 
-def batch_generate(dump_freq: int, num_sequences: int, sampling_kwargs, batch_size: int, model, tokenizer, seed: int, output_path="./temp.csv", **kwargs) -> dict:
+def batch_generate(dump_freq: int, num_sequences: int, sampling_kwargs, batch_size: int, model, tokenizer, seed: int, output_path="./temp", **kwargs) -> dict:
     results = {"sampling_kwargs": [], "sequence_log_prob": [], "sequence": [], "seq_trans_log_probs": [], "seq_entropy_log_probs": []}
 
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    pd.DataFrame(results).to_csv(output_path) # overwrite existing filepath
+    pd.DataFrame(results).to_csv(f"{output_path}.csv") # overwrite existing filepath
 
     for num_seqs in tqdm.tqdm(range(0, num_sequences, dump_freq), desc=str(sampling_kwargs)):
         num_seqs = min(dump_freq, num_sequences - num_seqs)
@@ -98,7 +98,7 @@ def batch_generate(dump_freq: int, num_sequences: int, sampling_kwargs, batch_si
         results["seq_entropy_log_probs"].extend(sampled_seq_entr_scores)
 
         print("Writing down", len(sampled_seq), "to file:", output_path)
-        pd.DataFrame(results).to_csv(output_path, mode="a", header=False) # overwrite existing filepath
+        pd.DataFrame(results).to_csv(f"{output_path}.csv", mode="a", header=False) # append existing filepath
         results = {"sampling_kwargs": [], "sequence_log_prob": [], "sequence": [], "seq_trans_log_probs": [], "seq_entropy_log_probs": []}
 
     return results
@@ -111,41 +111,44 @@ def multinomial_generation(**kwargs):
 
     return pd.DataFrame(results)
 
-def top_k_sampling(params: List[int], **kwargs):
+def top_k_sampling(params: List[int], output_path: str, **kwargs):
     if isinstance(params, int):
         params = [params]
 
     results = []
     for k in params:
+        output_path_k = f"{output_path}_{k}"
         sampling_kwargs = dict(do_sample=True, top_k=k)
-        result = batch_generate(sampling_kwargs=sampling_kwargs, **kwargs)
+        result = batch_generate(sampling_kwargs=sampling_kwargs, output_path=output_path_k, **kwargs)  # todo
         results.append(result)
 
     return pd.concat([pd.DataFrame(r) for r in results])
 
 
-def top_p_sampling(params: List[float], **kwargs):
+def top_p_sampling(params: List[float], output_path: str, **kwargs):
     if isinstance(params, int):
         params = [params]
 
     results = []
     for p in params:
+        output_path_p = f"{output_path}_{p}"
         sampling_kwargs = dict(do_sample=True, top_p=p)
-        result = batch_generate(sampling_kwargs=sampling_kwargs, **kwargs)
+        result = batch_generate(sampling_kwargs=sampling_kwargs,  output_path=output_path_p, **kwargs)
         results.append(result)
 
     results = pd.concat([pd.DataFrame(r) for r in results])
     return results
 
 
-def temp_sampling(params: List[float], **kwargs):
+def temp_sampling(params: List[float], output_path: str, **kwargs):
     if isinstance(params, (float, int)):
         params = [params]
 
     results = []
     for t in params:
+        output_path_t = f"{output_path}_{t}"
         sampling_kwargs = dict(do_sample=True, temperature=t)
-        result = batch_generate(sampling_kwargs=sampling_kwargs, **kwargs)
+        result = batch_generate(sampling_kwargs=sampling_kwargs, output_path=output_path_t, **kwargs)
         results.append(result)
 
     results = pd.concat([pd.DataFrame(r) for r in results])

@@ -1,0 +1,9 @@
+# Use this file to provide the default configurations for the script "run_properties.py"
+base_dir: "/extra/ucinlp1/cbelem/experiment-ro-prompts/generations/uncond-half-multinomial"
+# Use this directory to put the sampled sequences w/ properties
+output_dir: "/extra/ucinlp1/cbelem/experiment-ro-prompts/generations-results/uncond-half-multinomial"
+# Sampling seed
+seed: 98123
+# default batch_size
+batch_size: 32
+colname: sampled_sequence

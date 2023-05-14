@@ -80,13 +80,13 @@ def compute_diversity(text: spacy.tokens.doc.Doc) -> tuple:
     return unique_words / len(text_words), len(text_words)
 
 
-def get_statistics(data: pd.DataFrame) -> pd.DataFrame:
+def get_statistics(data: pd.DataFrame, colname="sequence") -> pd.DataFrame:
     data = data.copy()
 
-    data["num_chars"] = data["sequence"].apply(len)
+    data[f"{colname}_num_chars"] = data[colname].apply(len)
 
     # Apply spacy pipeline
-    sampled_texts = data["sequence"].values
+    sampled_texts = data[colname].values
     sampled_texts = [NLP(t) for t in sampled_texts]
 
     # Add num_sentences and num_puncts

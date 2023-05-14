@@ -6,6 +6,7 @@ import os
 import torch
 import time
 
+
 def parse_arguments() -> dict:
     import argparse, yaml
     parser = argparse.ArgumentParser()
@@ -14,7 +15,6 @@ def parse_arguments() -> dict:
     parser.add_argument("-r", "--model-revision", default=None, type=str)
     parser.add_argument("-d", "--device", default="cuda", type=str)
     parser.add_argument("-bs", "--batch_size", default=None, type=int)
-
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
@@ -136,7 +136,7 @@ if __name__ == "__main__":
     decoding_configs = config.pop("decoding")
     decoding_name, decoding_method = load_decoding_algorithm(**decoding_configs, **sampling_configs)
 
-    output_fp = f"{output_dir}/{model_name}-{decoding_name}.csv"
+    output_fp = f"{output_dir}/{model_name}-{decoding_name}"
     if os.path.exists(output_fp):
         print(output_fp, "already exists!")
         os.remove(output_fp)

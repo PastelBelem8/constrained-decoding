@@ -1,0 +1,14 @@
+decoding:
+  max_new_tokens: 50
+  temperature:
+    params: [0.1, 0.3, 0.5, 0.95, 1.15, 1.5]
+  top_p:
+    params: [0.1, 0.3, 0.5, 0.7, 0.8, 0.9]
+  top_k:
+    params: [2, 10, 40, 100]
+
+sampling:
+  seed: 8731
+  batch_size: 32
+  dataset_path: /extra/ucinlp1/cbelem/experiment-ro-prompts/generations/cond-roprompt/raw_data.csv
+  output_dir: /extra/ucinlp1/cbelem/experiment-ro-prompts/generations-results/cond-roprompt
