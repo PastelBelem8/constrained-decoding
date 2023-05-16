@@ -1,0 +1,28 @@
+decoding:
+  max_new_tokens: 50
+  temperature:
+    params: [0.1, 0.3, 0.5, 0.95, 1.15, 1.5]
+  top_p:
+    params: [0.1, 0.3, 0.5, 0.7,  0.8,  0.9]
+  top_k:s
+    params: [2, 10, 40, 100]
+
+sampling:
+  seed: 8731
+  batch_size: 32
+  prefix_col: prefix_10
+#  dataset_path: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/seed_model/raw_data.csv
+#  output_dir: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/seed_model
+#  dataset_path: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/seed_data/PILE/raw_data.csv
+#  output_dir: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/seed_data/PILE
+# -----------------------------------
+# constrained decoding
+# -----------------------------------
+dataset_path: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/constr_seed_data/adjectives_bad/raw_data.csv
+output_dir: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/constr_seed_data/adjectives_bad
+#  dataset_path: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/constr_seed_data/adjectives_good/raw_data.csv
+#  output_dir: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/constr_seed_data/adjectives_good
+#  dataset_path: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/constr_seed_data/religions/raw_data.csv
+#  output_dir: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/constr_seed_data/religions
+#  dataset_path: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/constr_seed_data/toxic_words/raw_data.csv
+#  output_dir: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/constr_seed_data/toxic_words

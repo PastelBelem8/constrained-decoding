@@ -1,0 +1,11 @@
+decoding:
+  max_new_tokens: 90
+  top_p:
+    params: [0.1, 0.3, 0.5, 0.7,  0.8,  0.9]
+
+sampling:
+  seed: 8731
+  batch_size: 16
+  prefix_col: prefix_10
+  dataset_path: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/constr_seed_data/toxic_words/raw_data.csv
+  output_dir: /home/cbelem/projects/constrained-decoding/experiments-may-15/data/EleutherAI__pythia-1.4b/constr_seed_data/toxic_words
