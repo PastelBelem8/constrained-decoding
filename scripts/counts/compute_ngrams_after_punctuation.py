@@ -403,4 +403,4 @@ if __name__ == "__main__":
             logger.error("Exception occurred in file {num_file}", exc_info=True)
 
     logger.info("Saving final counts...")
-    counts.save("final")
+    counts.save(filename=f"{num_file}_done")
